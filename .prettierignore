@@ -1,0 +1,9 @@
+node_modules
+.next
+.local
+package-lock.json
+playwright-report
+test-results
+public/images
+DEVELOPMENT_BLUEPRINT.md
+schema.prisma

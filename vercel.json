@@ -1,0 +1,6 @@
+{
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "regions": ["fra1"],
+  "crons": [{ "path": "/api/v1/internal/outbox", "schedule": "0 0 * * *" }]
+}
