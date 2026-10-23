@@ -40,6 +40,14 @@ Open the application on port 3000. Staff login is `/login?staff=1`. The local da
 
 ## Architecture
 
+### Menu and delivery tracking
+
+- `/menu` supports category browsing, dish-name/description search and an available-only filter. Clear filters to return to the full menu. Real dishes and prices are managed at `/admin/menu`; no live restaurant menu data is invented or published by this change.
+- `/track` (also `/track-order`) accepts a private tracking link or its 64-character code. It can reopen the most recent checkout saved in the same browser tab. An order number alone cannot reveal an order.
+- `/track/[token]` shows preparation and delivery milestones, rider assignment/pickup/delivery timestamps, payment state, order activity and a copy-link button. Updates poll every five seconds; a failed refresh retains the last successful view with a stale-data notice. This is status tracking, not live GPS.
+- Signed-in customers can track their own orders from `/account/orders`, even without the original guest tracking link. The API checks ownership and returns 404 for another customer's order.
+- Tracking responses exclude customer contact/address information, rider identity/contact details, tracking-token hashes and delivery proof notes. Keep capability links private.
+
 This implementation adapts the original blueprint to **Vercel + Supabase PostgreSQL**:
 
 - Next.js App Router serves both the interfaces and `/api/v1` API. A permanently running Express server is unnecessary on Vercel.

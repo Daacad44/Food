@@ -13,7 +13,7 @@ import {
   openShift,
   closeShift,
 } from '../src/lib/operations';
-import { passwordHash, type Actor } from '../src/lib/security';
+import { createSession, passwordHash, type Actor } from '../src/lib/security';
 import { POST, GET, PATCH, DELETE } from '../src/app/api/v1/[...path]/route';
 import type { CheckoutInput } from '../src/lib/domain';
 let owner: Actor,
@@ -431,5 +431,69 @@ describe('HTTP authorization, validation and sessions', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).isAvailable).toBe(false);
     await db.menuItem.update({ where: { id: burger.id }, data: { isAvailable: true } });
+  });
+  it('tracks delivery milestones without exposing rider identity, address or proof notes', async () => {
+    const zone = await db.deliveryZone.findFirstOrThrow({ where: { restaurantId: r.id } });
+    const o = await createOrder(
+      {
+        ...input(),
+        type: 'DELIVERY',
+        zoneId: zone.id,
+        deliveryAddress: 'Private delivery address',
+      },
+      randomUUID(),
+      null,
+    );
+    await db.delivery.update({
+      where: { orderId: o.id },
+      data: {
+        riderId: rider.id,
+        status: 'IN_TRANSIT',
+        assignedAt: new Date(),
+        pickedUpAt: new Date(),
+        proofNote: 'Private proof',
+      },
+    });
+    const response = await call('orders/track/' + o.token);
+    expect(response.status).toBe(200);
+    const view = await response.json();
+    expect(view.delivery.status).toBe('IN_TRANSIT');
+    expect(view.delivery.pickedUpAt).toBeTruthy();
+    expect(view.delivery).not.toHaveProperty('rider');
+    expect(view.delivery).not.toHaveProperty('riderId');
+    expect(view.delivery).not.toHaveProperty('proofNote');
+    expect(view).not.toHaveProperty('deliveryAddress');
+  });
+  it('allows account tracking only for the order owner', async () => {
+    const customer = await db.customer.create({
+      data: {
+        restaurantId: r.id,
+        fullName: 'Tracking customer',
+        phone: 'tracking-' + randomUUID(),
+      },
+    });
+    const user: Actor = {
+      id: customer.id,
+      restaurantId: r.id,
+      kind: 'customer',
+      role: 'CUSTOMER',
+      name: customer.fullName,
+    };
+    const o = await createOrder(input(), randomUUID(), user),
+      cookie = (await createSession(customer.id, 'customer')).split(';')[0];
+    const path = 'customers/me/orders/' + o.id + '/track';
+    expect((await call(path)).status).toBe(401);
+    const response = await call(path, 'GET', undefined, cookie);
+    expect(response.status).toBe(200);
+    expect((await response.json()).orderNumber).toBe(o.orderNumber);
+    const other = await db.customer.create({
+      data: {
+        restaurantId: r.id,
+        fullName: 'Other tracking customer',
+        phone: 'other-' + randomUUID(),
+      },
+    });
+    const foreignCookie = (await createSession(other.id, 'customer')).split(';')[0];
+    expect((await call(path, 'GET', undefined, foreignCookie)).status).toBe(404);
   });
 });

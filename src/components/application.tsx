@@ -1,6 +1,7 @@
 'use client';
 import { Suspense } from 'react';
 import { useSearchParams } from 'next/navigation';
+import { OrderTracking, TrackOrderPage } from './order-tracking';
 import {
   CustomerShell,
   Home,
@@ -8,7 +9,6 @@ import {
   ItemPage,
   CartPage,
   Checkout,
-  Tracking,
   AuthPage,
   Account,
   InfoPage,
@@ -79,8 +79,11 @@ function Route({ path }: { path: string }) {
   else if (path === '/cart') content = <CartPage />;
   else if (path === '/checkout') content = <Checkout />;
   else if (path === '/order/success')
-    content = <Tracking success token={params.get('token') || ''} />;
-  else if (path.startsWith('/track/')) content = <Tracking token={path.split('/')[2]} />;
+    content = <OrderTracking success token={params.get('token') || ''} />;
+  else if (path === '/track' || path === '/track-order') content = <TrackOrderPage />;
+  else if (/^\/account\/orders\/[^/]+\/track$/.test(path))
+    content = <OrderTracking orderId={path.split('/')[3]} />;
+  else if (path.startsWith('/track/')) content = <OrderTracking token={path.split('/')[2]} />;
   else if (path === '/login') content = <AuthPage />;
   else if (path === '/register') content = <AuthPage register />;
   else if (path.startsWith('/account'))
