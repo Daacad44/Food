@@ -2,6 +2,8 @@
 
 ## Supabase
 
+**No terminal available?** Use [supabase/README.md](../supabase/README.md) and run the three supplied SQL files in Supabase SQL Editor instead of the npm migration/seed steps below. Vercel environment variables remain required.
+
 1. Create a Supabase PostgreSQL project in a region close to your Vercel functions. The example Vercel configuration uses Frankfurt (`fra1`); adjust both to your actual region.
 2. Obtain the transaction pooler connection string for serverless runtime (`DATABASE_URL`) and a direct or session-pooler connection string for migrations (`DIRECT_URL`). Use the project dashboard's actual host, username and password. URL-encode special password characters and require TLS with certificate verification (`sslmode=verify-full`). Do not put these strings in frontend code or Git.
 3. Configure the variables securely in a trusted migration environment, then run `npm ci`, `npm run db:validate`, and `npm run db:migrate`. Review migrations before applying to an existing production database.

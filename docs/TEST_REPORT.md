@@ -65,3 +65,16 @@ The results demonstrate a working local development and test workflow; they do n
 - API responses show delivery milestones without revealing customer addresses, rider contact information or proof-of-delivery notes. Tracking is status-based, with five-second polling; it does not claim live GPS.
 - No schema migration or production menu-data mutation is required. Staff continue to manage actual menu items and prices through the existing admin interface.
 - The supplied live domain could not be inspected from this cloud environment: its outbound proxy returned HTTP 403 for the connection. These results validate the repository and local production build, not a new live deployment.
+
+## Supabase SQL Editor setup — 24 October 2026
+
+A separate local PostgreSQL database was initialized using only the three SQL Editor scripts. Verification covered:
+
+- Applying the generated schema twice, including exact Prisma migration checksums.
+- Keeping unrelated public-table data and its RLS configuration unchanged.
+- Running demo seed repeatedly without duplicate menu/options/tables or changes to existing menu prices and stock.
+- Rejecting an unchanged admin-password placeholder; generating a pgcrypto bcrypt hash accepted by the application; preserving an existing owner password on repeat execution.
+- Running `prisma migrate deploy` with no pending migrations and a schema diff with no differences after SQL initialization.
+- Signing in through the actual staff API, loading the menu, placing an order, deducting stock, collecting cash, completing the order and checking private tracking against the SQL-initialized database.
+
+These tests ran locally, not against the user's hosted Supabase project. The scripts are supplied for the user to run in Supabase SQL Editor.

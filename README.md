@@ -4,6 +4,8 @@ A working single-restaurant ordering and management application. Somali is the d
 
 ## Run locally
 
+For hosted setup without a terminal, use the [Supabase SQL Editor instructions](supabase/README.md). The three SQL files create the schema, demo data and an owner account while retaining Prisma migration compatibility.
+
 Requires Node.js 24 and npm. No hosted database credentials are needed for local development.
 
 ```sh
