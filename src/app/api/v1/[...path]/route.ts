@@ -1,3 +1,4 @@
+import { trackingView } from '@/lib/tracking-view';
 import QRCode from 'qrcode';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
@@ -258,21 +259,24 @@ async function handle(request: Request, context: Context) {
         include: orderInclude,
       });
       ensure(o, 'Order not found', 404);
-      return json({
-        orderNumber: o.orderNumber,
-        status: o.status,
-        paymentStatus: o.paymentStatus,
-        type: o.type,
-        total: o.total,
-        createdAt: o.createdAt,
-        items: o.items.map((i) => ({
-          nameSnapshot: i.nameSnapshot,
-          quantity: i.quantity,
-          lineTotal: i.lineTotal,
-          modifiers: i.modifiers.map((m) => ({ nameSnapshot: m.nameSnapshot })),
-        })),
-        statusEvents: o.statusEvents.map((e) => ({ toStatus: e.toStatus, createdAt: e.createdAt })),
+      return json(trackingView(o));
+    }
+    if (
+      p[0] === 'customers' &&
+      p[1] === 'me' &&
+      p[2] === 'orders' &&
+      p[3] &&
+      p[4] === 'track' &&
+      method === 'GET'
+    ) {
+      const user = await requireActor(request, ['CUSTOMER']);
+      const id = z.uuid().parse(p[3]);
+      const order = await db.order.findFirst({
+        where: { id, customerId: user.id },
+        include: orderInclude,
       });
+      ensure(order, 'Order not found', 404);
+      return json(trackingView(order));
     }
     if (path === 'customers/me/orders' && method === 'GET') {
       const u = await requireActor(request, ['CUSTOMER']);

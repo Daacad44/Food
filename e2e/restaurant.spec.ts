@@ -93,3 +93,125 @@ test('table QR starts a dine-in order without exposing staff access', async ({ p
   await expect(page).toHaveURL(/\/order\/success/);
   await expect(page.getByRole('heading', { name: 'Dalabka waa la helay!' })).toBeVisible();
 });
+
+test('menu description search and availability filter use the same result list', async ({
+  page,
+}) => {
+  await page.goto('/menu');
+  await page.getByRole('textbox', { name: 'Search menu' }).fill('udgoon');
+  await expect(page.getByRole('heading', { name: 'Bariis & Hilib', exact: true })).toBeVisible();
+  await expect(page.getByText('Cunto lama helin.', { exact: true })).toHaveCount(0);
+  await page.getByRole('checkbox', { name: 'Kuwa la heli karo oo keliya' }).check();
+  await expect(page.getByRole('heading', { name: 'Bariis & Hilib', exact: true })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Search menu' }).fill('no-such-dish');
+  await expect(page.getByRole('heading', { name: 'Cunto lama helin.' })).toBeVisible();
+  await page.getByRole('button', { name: 'Nadiifi raadinta' }).click();
+  await expect(page.getByRole('heading', { name: 'Botan Burger', exact: true })).toBeVisible();
+});
+
+test('tracking entry rejects order-number guessing and resumes a saved private link', async ({
+  page,
+}) => {
+  const token = 'a'.repeat(64);
+  await page.addInitScript(
+    ({ token }) =>
+      sessionStorage.setItem(
+        'botan-last-order',
+        JSON.stringify({ token, orderNumber: 'BTN-SAVED' }),
+      ),
+    { token },
+  );
+  await page.goto('/track');
+  await page.getByLabel('Tracking link ama koodh', { exact: true }).fill('BTN-123');
+  await page.getByRole('button', { name: 'Raadi dalabkayga' }).click();
+  await expect(page.locator('main').getByRole('alert')).toContainText(
+    'Lambarka dalabka keliya kuma filna',
+  );
+  await expect(page.getByRole('link', { name: 'Sii wad tracking' })).toHaveAttribute(
+    'href',
+    '/track/' + token,
+  );
+  await page.getByRole('button', { name: 'Ka saar tab-kan' }).click();
+  await expect(page.getByRole('link', { name: 'Sii wad tracking' })).toHaveCount(0);
+  await page
+    .getByLabel('Tracking link ama koodh', { exact: true })
+    .fill('https://food.daljir.tech/track/' + token);
+  await page.getByRole('button', { name: 'Raadi dalabkayga' }).click();
+  await expect(page).toHaveURL('/track/' + token);
+  await expect(page.locator('main').getByRole('alert')).toContainText('Order not found');
+});
+
+test('delivery tracking updates from order received to dispatched and delivered', async ({
+  page,
+}) => {
+  const login = await page.request.post('/api/v1/auth/staff/login', {
+    data: { email: process.env.OWNER_EMAIL, password: process.env.OWNER_PASSWORD },
+  });
+  expect(login.ok()).toBe(true);
+  const menu = await (await page.request.get('/api/v1/menu/items')).json();
+  const zones = await (await page.request.get('/api/v1/delivery/zones')).json();
+  const created = await page.request.post('/api/v1/orders', {
+    headers: { 'Idempotency-Key': crypto.randomUUID() },
+    data: {
+      items: [
+        { menuItemId: menu[0].id, quantity: 1, modifierOptionIds: [], specialInstructions: '' },
+      ],
+      type: 'DELIVERY',
+      guestName: 'Private Tracking Guest',
+      guestPhone: '+252610004444',
+      zoneId: zones[0].id,
+      deliveryAddress: 'Private test address',
+    },
+  });
+  expect(created.ok()).toBe(true);
+  const order = await created.json();
+  await page.goto('/track/' + order.token);
+  await expect(page.locator('[aria-current="step"]')).toContainText('Dalabkii waa la helay');
+  for (const status of ['CONFIRMED', 'PREPARING', 'READY'])
+    expect(
+      (
+        await page.request.patch('/api/v1/admin/orders/' + order.id + '/status', {
+          data: { status },
+        })
+      ).ok(),
+    ).toBe(true);
+  const details = await (await page.request.get('/api/v1/admin/orders/' + order.id)).json();
+  const riders = await (await page.request.get('/api/v1/admin/delivery/riders')).json();
+  expect(
+    (
+      await page.request.patch('/api/v1/admin/deliveries/' + details.delivery.id, {
+        data: { riderId: riders[0].id },
+      })
+    ).ok(),
+  ).toBe(true);
+  expect(
+    (
+      await page.request.patch('/api/v1/admin/orders/' + order.id + '/status', {
+        data: { status: 'OUT_FOR_DELIVERY' },
+      })
+    ).ok(),
+  ).toBe(true);
+  await expect(page.locator('[aria-current="step"]')).toContainText('Waddada ku jira', {
+    timeout: 10000,
+  });
+  await expect(page.getByText('Rider-ku wuu qaaday cuntada')).toBeVisible();
+  expect(
+    (
+      await page.request.post('/api/v1/payments/' + details.payments[0].id + '/capture', {
+        data: {},
+      })
+    ).ok(),
+  ).toBe(true);
+  expect(
+    (
+      await page.request.patch('/api/v1/admin/orders/' + order.id + '/status', {
+        data: { status: 'COMPLETED' },
+      })
+    ).ok(),
+  ).toBe(true);
+  await expect(page.locator('[aria-current="step"]')).toContainText('Waa la geeyey', {
+    timeout: 10000,
+  });
+  await expect(page.getByText('Private Tracking Guest')).toHaveCount(0);
+  await expect(page.getByText('Private test address')).toHaveCount(0);
+});

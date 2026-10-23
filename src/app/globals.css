@@ -4151,3 +4151,240 @@ td .icon-button {
   font-size: 11px;
   color: #153b30;
 }
+
+/* Menu discovery and private order tracking */
+.menu-results {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+  margin: -10px 0 24px;
+  color: var(--muted);
+  font-size: 11px;
+}
+.menu-results .check-row {
+  margin-left: auto;
+}
+.menu-results .text-link {
+  font-size: 11px;
+}
+.track-landing .page-intro {
+  max-width: 650px;
+}
+.saved-order {
+  margin-top: 24px;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+.saved-order h2 {
+  margin: 7px 0 0;
+  font-size: 19px;
+}
+.saved-order small {
+  color: var(--muted);
+}
+.saved-order > .button {
+  margin-left: auto;
+}
+.saved-order > .text-link {
+  width: 100%;
+  font-size: 11px;
+}
+.tracking-help {
+  display: flex;
+  gap: 24px;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  margin: 25px 0;
+}
+.tracking-card .section-heading {
+  align-items: flex-start;
+}
+.tracking-card .section-heading h2 {
+  font-size: 24px;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+.tracking-card .section-heading small {
+  color: var(--muted);
+}
+.tracking-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #f2f5e9;
+  padding: 10px 13px;
+  border-radius: 7px;
+  font-size: 10px;
+  color: #73866a;
+}
+.tracking-live > .icon-button {
+  margin-left: auto;
+}
+.offline-dot {
+  width: 6px;
+  height: 6px;
+  background: #b18039;
+  border-radius: 50%;
+}
+.delivery-progress {
+  list-style: none;
+  padding: 0;
+  margin: 30px 0;
+}
+.delivery-progress > li {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  position: relative;
+  padding: 0 0 26px;
+  color: #9aa58e;
+}
+.delivery-progress > li:last-child {
+  padding-bottom: 0;
+}
+.delivery-progress > li:not(:last-child):after {
+  content: '';
+  position: absolute;
+  left: 16px;
+  top: 33px;
+  bottom: 0;
+  width: 2px;
+  background: #e8ecdf;
+}
+.delivery-progress > li > span {
+  height: 34px;
+  width: 34px;
+  border: 1px solid #dfe5d5;
+  background: #fafbf6;
+  border-radius: 50%;
+  display: grid;
+  place-content: center;
+  z-index: 1;
+  font-size: 11px;
+  flex-shrink: 0;
+}
+.delivery-progress b {
+  font-size: 13px;
+  display: block;
+  padding-top: 5px;
+}
+.delivery-progress small {
+  font-size: 10px;
+  display: block;
+  color: #718765;
+}
+.delivery-progress > .done {
+  color: var(--green);
+}
+.delivery-progress > .done > span {
+  background: var(--green);
+  color: white;
+  border-color: var(--green);
+}
+.delivery-progress > .done:after {
+  background: #9caf89;
+}
+.delivery-progress > .current {
+  color: var(--green);
+}
+.delivery-progress > .current > span {
+  border: 2px solid var(--green);
+  background: #eaf1dd;
+  box-shadow: 0 0 0 4px #f3f6ec;
+}
+.delivery-details {
+  display: flex;
+  gap: 15px;
+  padding: 18px;
+  background: #f5f3e7;
+  border: 1px solid #e6e2cf;
+  border-radius: 10px;
+  margin: 22px 0 30px;
+  color: var(--green);
+}
+.delivery-details b {
+  font-size: 12px;
+}
+.delivery-details p {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.8;
+  margin: 5px 0 0;
+}
+.tracking-actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 24px;
+}
+.tracking-history {
+  border-top: 1px solid var(--line);
+  margin-top: 20px;
+  padding-top: 18px;
+}
+.tracking-history summary {
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--green);
+}
+@media (max-width: 1200px) and (min-width: 961px) {
+  .customer-header {
+    gap: 12px;
+  }
+  .nav {
+    gap: 12px;
+    font-size: 9px;
+  }
+  .header-actions {
+    gap: 3px;
+  }
+  .bag-button {
+    padding: 10px;
+  }
+  .language {
+    font-size: 9px;
+  }
+}
+@media (max-width: 640px) {
+  .menu-results {
+    gap: 10px 20px;
+    margin-top: 0;
+    font-size: 10px;
+  }
+  .menu-results .check-row {
+    margin-left: 0;
+    font-size: 10px;
+  }
+  .menu-results .text-link {
+    font-size: 10px;
+  }
+  .saved-order > .button {
+    margin-left: 0;
+  }
+  .saved-order h2 {
+    font-size: 17px;
+  }
+  .tracking-card .section-heading {
+    flex-wrap: wrap;
+  }
+  .tracking-card .section-heading h2 {
+    font-size: 19px;
+  }
+  .tracking-live {
+    font-size: 9px;
+  }
+  .tracking-actions .button {
+    font-size: 10px;
+    padding: 12px 15px;
+  }
+  .tracking-help {
+    gap: 17px;
+  }
+  .tracking-help > .text-link {
+    font-size: 11px;
+  }
+}

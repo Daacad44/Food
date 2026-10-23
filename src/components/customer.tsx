@@ -69,6 +69,9 @@ export function CustomerShell({ children }: { children: React.ReactNode }) {
           <Link href="/menu" onClick={() => setOpen(false)}>
             {tr('Menu-ga', 'Our menu')}
           </Link>
+          <Link href="/track" onClick={() => setOpen(false)}>
+            {tr('La soco dalabka', 'Track order')}
+          </Link>
           <Link href="/offers" onClick={() => setOpen(false)}>
             {tr('Dalabyada gaarka ah', 'Special offers')} <span className="nav-badge">10%</span>
           </Link>
@@ -140,6 +143,7 @@ export function CustomerShell({ children }: { children: React.ReactNode }) {
             <Link href="/faq">FAQ</Link>
             <Link href="/contact">Contact</Link>
             <Link href="/account/orders">My orders</Link>
+            <Link href="/track">{tr('La soco dalabka', 'Track order')}</Link>
             <Link href="/privacy">Privacy & terms</Link>
           </div>
           <div>
@@ -502,12 +506,20 @@ export function MenuPage() {
     params = useSearchParams(),
     [category, setCategory] = useState(params.get('category') || 'all'),
     [search, setSearch] = useState(''),
-    { data: items, error } = useData<any[]>('menu/items'),
+    [availableOnly, setAvailableOnly] = useState(false),
+    { data: items, error, refresh } = useData<any[]>('menu/items'),
     { data: categories } = useData<any[]>('menu/categories');
   useEffect(() => {
+    setCategory(params.get('category') || 'all');
     const token = params.get('table');
     if (token) sessionStorage.setItem('botan-table-token', token);
   }, [params]);
+  const visibleItems = (items || []).filter(
+    (item) =>
+      (category === 'all' || item.category.slug === category) &&
+      (!availableOnly || item.isAvailable) &&
+      `${item.name} ${item.description || ''}`.toLowerCase().includes(search.trim().toLowerCase()),
+  );
   return (
     <section className="section">
       {params.get('table') && (
@@ -550,25 +562,52 @@ export function MenuPage() {
           />
         </label>
       </div>
-      {error && <Notice error={error} />}
+      <div className="menu-results">
+        <span aria-live="polite">
+          {items ? `${visibleItems.length} ${tr('cunto', 'dishes')}` : ''}
+        </span>
+        <label className="check-row">
+          <input
+            type="checkbox"
+            checked={availableOnly}
+            onChange={(event) => setAvailableOnly(event.target.checked)}
+          />
+          {tr('Kuwa la heli karo oo keliya', 'Available dishes only')}
+        </label>
+        <Link className="text-link" href="/track">
+          <Truck size={15} />
+          {tr('La soco dalab hore', 'Track an existing order')}
+        </Link>
+      </div>
+      {error && (
+        <>
+          <Notice error={error} />
+          <button className="button outline" onClick={() => void refresh()}>
+            {tr('Mar kale isku day', 'Try again')}
+          </button>
+        </>
+      )}
       <div className="food-grid">
-        {items
-          ?.filter(
-            (i) =>
-              (category === 'all' || i.category.slug === category) &&
-              `${i.name} ${i.description}`.toLowerCase().includes(search.toLowerCase()),
-          )
-          .map((i) => (
-            <FoodCard key={i.id} item={i} />
-          ))}
+        {visibleItems.map((item) => (
+          <FoodCard key={item.id} item={item} />
+        ))}
       </div>
       {!items && !error && <Loading />}
-      {items &&
-        !items.some(
-          (i) =>
-            (category === 'all' || i.category.slug === category) &&
-            i.name.toLowerCase().includes(search.toLowerCase()),
-        ) && <p className="empty">{tr('Cunto lama helin.', 'No matching dishes.')}</p>}
+      {items && visibleItems.length === 0 && (
+        <div className="empty">
+          <h2>{tr('Cunto lama helin.', 'No matching dishes.')}</h2>
+          <button
+            className="button outline"
+            onClick={() => {
+              setSearch('');
+              setCategory('all');
+              setAvailableOnly(false);
+            }}
+          >
+            {tr('Nadiifi raadinta', 'Clear filters')}
+          </button>
+        </div>
+      )}
     </section>
   );
 }
@@ -835,7 +874,9 @@ export function Checkout({ pos = false }: { pos?: boolean }) {
         headers: { 'Idempotency-Key': key, 'X-Expected-Total': String(quote.total) },
         body: JSON.stringify(data),
       });
-      sessionStorage.setItem('botan-last-order', JSON.stringify(result));
+      try {
+        sessionStorage.setItem('botan-last-order', JSON.stringify(result));
+      } catch {}
       clear();
       router.push('/order/success?token=' + result.token);
     } catch (e) {
@@ -1048,88 +1089,6 @@ export const statusLabel: Record<string, string> = {
   CANCELLED: 'La joojiyey',
   REJECTED: 'La diiday',
 };
-export function Tracking({ token, success = false }: { token: string; success?: boolean }) {
-  const { data: order, error } = useData('orders/track/' + token, 5000),
-    { tr } = useStore();
-  return (
-    <section className="section narrow">
-      <div className="page-intro">
-        <div className="success-mark">
-          <Check size={32} />
-        </div>
-        <div className="eyebrow">
-          {success ? 'THANK YOU FOR CHOOSING BOTAN' : 'FRESH FOOD, ON ITS WAY'}
-        </div>
-        <h1>
-          {success
-            ? tr('Dalabka waa la helay!', 'You’re on the list!')
-            : tr('La soco dalabkaaga', 'Follow your good food.')}
-        </h1>
-        <p>
-          {tr(
-            'Boggan hayso si aad ula socoto dalabkaaga.',
-            'Keep this page to follow your order. This link is private.',
-          )}
-        </p>
-      </div>
-      {error && <Notice error={error} />}
-      <p className="muted">
-        {tr(
-          'Si toos ah ayuu isu cusboonaysiiyaa 5 ilbiriqsi kasta.',
-          'Updates automatically every 5 seconds.',
-        )}
-      </p>
-      {order ? (
-        <div className="form-card">
-          <div className="section-heading">
-            <h2>{order.orderNumber}</h2>
-            <span className={'badge ' + order.status}>
-              {statusLabel[order.status] || order.status}
-            </span>
-          </div>
-          <div className="timeline">
-            {order.statusEvents.map((e: any, n: number) => (
-              <div key={n}>
-                <span>
-                  <Check size={13} />
-                </span>
-                <div>
-                  <b>{statusLabel[e.toStatus] || e.toStatus}</b>
-                  <small>
-                    {new Date(e.createdAt).toLocaleString('en-GB', {
-                      timeZone: 'Africa/Mogadishu',
-                    })}
-                  </small>
-                </div>
-              </div>
-            ))}
-          </div>
-          {order.items.map((i: any, n: number) => (
-            <div className="summary-row" key={n}>
-              <span>
-                {i.quantity} × {i.nameSnapshot}
-              </span>
-              <b>{formatMoney(i.lineTotal)}</b>
-            </div>
-          ))}
-          <div className="summary-row total">
-            <span>Total</span>
-            <b>{formatMoney(order.total)}</b>
-          </div>
-          <div className="summary-row">
-            <span>Payment</span>
-            <span className="badge">{order.paymentStatus}</span>
-          </div>
-          <Link className="button full" href={'/track/' + token}>
-            {tr('Fur tracking link', 'Open tracking link')}
-          </Link>
-        </div>
-      ) : (
-        !error && <Loading />
-      )}
-    </section>
-  );
-}
 export function AuthPage({ register = false }: { register?: boolean }) {
   const { tr, refreshUser } = useStore(),
     params = useSearchParams(),
@@ -1366,6 +1325,10 @@ export function Account({ section }: { section: string }) {
                 <small>{new Date(o.createdAt).toLocaleDateString()}</small>
                 <b>{formatMoney(o.total)}</b>
               </div>
+              <Link className="button outline small" href={'/account/orders/' + o.id + '/track'}>
+                <Truck size={15} />
+                {tr('La soco dalabka', 'Track order')}
+              </Link>
               {o.status === 'COMPLETED' && (
                 <form
                   className="inline-form"
