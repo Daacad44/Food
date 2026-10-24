@@ -26,9 +26,9 @@ Configure production and preview variables separately:
 | `CRON_SECRET`                   | Independent random secret for authenticated outbox maintenance                                   |
 | `OWNER_EMAIL`, `OWNER_PASSWORD` | Initial trusted seed only; not required for normal application runtime                           |
 | `BACKUP_KEY`                    | Independent 32-byte base64 encryption key for an external backup job                             |
-| `DALJIRCONNECT_URL`             | Optional. DaljirConnect base URL (e.g. `https://connect.daljir.tech`) for WhatsApp ordering       |
+| `DALJIRCONNECT_URL`             | Optional. DaljirConnect base URL (e.g. `https://connect.daljir.tech`) for WhatsApp ordering      |
 | `DALJIRCONNECT_API_KEY`         | DaljirConnect API key (`dc_live_…`) — pushes status, payment and the menu                        |
-| `DALJIRCONNECT_WEBHOOK_SECRET`  | Secret of the DaljirConnect webhook that sends orders to `/api/v1/webhooks/daljirconnect`         |
+| `DALJIRCONNECT_WEBHOOK_SECRET`  | Secret of the DaljirConnect webhook that sends orders to `/api/v1/webhooks/daljirconnect`        |
 
 The `vercel.json` daily cron calls `/api/v1/internal/outbox`; Vercel attaches the configured cron authorization secret. Frequent updates in the UI use normal short-lived API requests. Increase notification processing frequency only when your Vercel plan supports it, or call the authenticated endpoint from a dedicated scheduler.
 
@@ -53,11 +53,11 @@ The system has not been deployed to a live Vercel/Supabase project in this sessi
 ## WhatsApp ordering (DaljirConnect)
 
 Optional. The DaljirConnect WhatsApp assistant takes orders in chat; they arrive here as **Pending approval** orders
-marked *WhatsApp*, and every status change, cash payment and the order number go back to the customer.
+marked _WhatsApp_, and every status change, cash payment and the order number go back to the customer.
 
 1. In DaljirConnect (Settings → POS & integrations): create an **API key**, then **Add POS address**
    `https://<this site>/api/v1/webhooks/daljirconnect` (events `order.created`, `order.updated`) and copy its secret.
-   Turn off *auto-confirm* in DaljirConnect's ordering settings so Botan's staff accept each order.
+   Turn off _auto-confirm_ in DaljirConnect's ordering settings so Botan's staff accept each order.
 2. Set `DALJIRCONNECT_URL`, `DALJIRCONNECT_API_KEY` and `DALJIRCONNECT_WEBHOOK_SECRET` here and redeploy.
 3. Apply the `202610240001_daljirconnect` migration (`npm run db:migrate`, or re-run `supabase/01-schema.sql`).
 4. Admin → Settings → **Sync menu now**. Later menu edits sync by themselves; SKU = the Botan menu item id.
