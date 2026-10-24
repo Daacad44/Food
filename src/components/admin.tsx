@@ -318,6 +318,7 @@ export function Dashboard() {
                   <b>{o.table ? `Miis ${o.table.tableNumber}` : o.guestName}</b>
                   <small>
                     {orderTypes[o.type] || o.type} · {formatMoney(o.total)}
+                    {o.channel === 'WHATSAPP' && ' · WhatsApp'}
                   </small>
                 </div>
                 <span className={'status-pill ' + tone}>{label}</span>
@@ -557,6 +558,7 @@ function OrderDetail({ order, refresh }: { order: any; refresh: () => Promise<vo
           <h2>Customer details</h2>
           <p>
             <b>{order.guestName}</b>
+            {order.channel === 'WHATSAPP' && <span className="badge"> WhatsApp</span>}
           </p>
           <p>{order.guestPhone}</p>
           <p>
@@ -2365,7 +2367,111 @@ export function SettingsPage() {
           Save restaurant settings <Check size={17} />
         </button>
       </form>
+      <DaljirConnectPanel />
     </>
+  );
+}
+
+const SYNC_BADGE: Record<string, string> = {
+  SENT: 'PAID',
+  PENDING: 'PENDING',
+  FAILED: 'CANCELLED',
+};
+
+/** WhatsApp ordering through DaljirConnect: connection state, menu sync and the last pushes. */
+function DaljirConnectPanel() {
+  const { data, error, refresh } = useData<any>('admin/integrations/daljirconnect', 15000),
+    { toast } = useStore(),
+    [busy, setBusy] = useState(false);
+  if (error) return <Notice error={error} />;
+  if (!data) return <Loading />;
+  const sync = async () => {
+    setBusy(true);
+    try {
+      const r = await api('admin/integrations/daljirconnect/sync', { method: 'POST' });
+      await refresh();
+      toast(r.failed ? 'Menu sync failed — see below' : 'Menu sent to DaljirConnect');
+    } catch (e) {
+      toast((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const result = data.menu.lastResult as Record<string, number> | null;
+  return (
+    <section className="panel" aria-labelledby="daljir-heading">
+      <div className="panel-heading">
+        <div>
+          <h2 id="daljir-heading">WhatsApp ordering · DaljirConnect</h2>
+          <p>
+            Orders the WhatsApp assistant takes arrive here for approval; every status change and
+            payment is sent back to the customer. The menu is synced automatically.
+          </p>
+        </div>
+        <span className={'badge ' + (data.configured ? 'PAID' : 'PENDING')}>
+          {data.configured ? 'Connected' : 'Not configured'}
+        </span>
+      </div>
+      <div className="padded" style={{ padding: 24 }}>
+        {!data.configured ? (
+          <p className="muted">
+            Set <code>DALJIRCONNECT_URL</code>, <code>DALJIRCONNECT_API_KEY</code> and{' '}
+            <code>DALJIRCONNECT_WEBHOOK_SECRET</code> in the server environment, then in
+            DaljirConnect (Settings → POS &amp; integrations) add this address for orders:
+          </p>
+        ) : (
+          <p className="muted">
+            {data.connectHost} · {data.whatsappOrders30d} WhatsApp orders in 30 days
+            {data.pending ? ` · ${data.pending} waiting to send` : ''}
+            {!data.webhookSecretSet && ' · webhook secret missing: orders cannot arrive'}
+          </p>
+        )}
+        <p>
+          Orders address: <code>{data.webhookUrl}</code>
+        </p>
+        <p className="muted">
+          Menu: {data.menu.items} items ·{' '}
+          {data.menu.lastSyncAt
+            ? `last synced ${new Date(data.menu.lastSyncAt).toLocaleString()}` +
+              (result ? ` (${result.created ?? 0} added, ${result.updated ?? 0} updated)` : '')
+            : 'never synced'}
+        </p>
+        <button
+          className="button small"
+          type="button"
+          disabled={!data.configured || busy}
+          onClick={sync}
+        >
+          {busy ? 'Syncing…' : 'Sync menu now'}
+        </button>
+        {data.recent.length > 0 && (
+          <div className="table-scroll" style={{ marginTop: 18 }}>
+            <table>
+              <thead>
+                <tr>
+                  <th>Sent</th>
+                  <th>What</th>
+                  <th>Result</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.recent.map((e: any) => (
+                  <tr key={e.id}>
+                    <td>{new Date(e.createdAt).toLocaleTimeString()}</td>
+                    <td>{e.kind === 'menu' ? 'Menu' : `Order ${e.orderNumber ?? '(rejected)'}`}</td>
+                    <td>
+                      <span className={'badge ' + (SYNC_BADGE[e.status] || '')}>{e.status}</span>
+                      {e.lastError && <small className="muted"> {e.lastError}</small>}
+                      {e.attempts > 1 && <small className="muted"> · {e.attempts} tries</small>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 export function SimpleList({ kind }: { kind: string }) {
