@@ -42,6 +42,14 @@ import {
   finance,
   processOutbox,
 } from '@/lib/operations';
+import {
+  drainDaljir,
+  handleWebhook,
+  integrationStatus,
+  scheduleDrain,
+  syncMenuNow,
+} from '@/lib/daljirconnect';
+import { queueMenuSync } from '@/lib/daljir-queue';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 type Context = { params: Promise<{ path: string[] }> };
@@ -64,6 +72,9 @@ async function handle(request: Request, context: Context) {
         throw new AppError(400, 'Invalid JSON');
       }
     };
+    // Changes may have queued pushes to DaljirConnect (WhatsApp); staff boards polling also retry failed ones.
+    if (method !== 'GET' || ['admin/orders', 'kitchen/orders', 'pos/orders'].includes(path))
+      await scheduleDrain();
     if (path === 'health' && method === 'GET') {
       await db.$queryRaw`SELECT 1`;
       return json({ status: 'ok', service: 'botan', database: 'connected' });
@@ -530,6 +541,7 @@ async function handle(request: Request, context: Context) {
             ensure(row, 'Resource not found', 404);
             await model.delete({ where: { id: p[3] } });
             await audit(tx, u, 'DELETE', name, p[3]);
+            if (name === 'menu' || name === 'categories') await queueMenuSync(tx, u.restaurantId);
             return { ok: true };
           }),
         );
@@ -585,6 +597,25 @@ async function handle(request: Request, context: Context) {
         501,
         'Online payment provider is not configured. Cash payment is available.',
       );
+    if (path === 'webhooks/daljirconnect' && method === 'POST') {
+      ensure(
+        Number(request.headers.get('content-length') || 0) <= 262144,
+        'Request too large',
+        413,
+      );
+      const raw = await request.text();
+      ensure(raw.length <= 262144, 'Request too large', 413);
+      return json(await handleWebhook(raw, request.headers.get('x-daljirconnect-signature')));
+    }
+    if (path === 'admin/integrations/daljirconnect' && method === 'GET') {
+      const u = await requireActor(request, MANAGERS);
+      return json(await integrationStatus(u.restaurantId, url.origin));
+    }
+    if (path === 'admin/integrations/daljirconnect/sync' && method === 'POST') {
+      const u = await requireActor(request, MANAGERS);
+      const result = await syncMenuNow(u.restaurantId);
+      return json({ ...result, status: await integrationStatus(u.restaurantId, url.origin) });
+    }
     if (p[0] === 'webhooks')
       throw new AppError(
         503,
@@ -905,7 +936,7 @@ async function handle(request: Request, context: Context) {
         'Unauthorized',
         401,
       );
-      return json(await processOutbox());
+      return json({ ...(await processOutbox()), daljirconnect: await drainDaljir(100) });
     }
     throw new AppError(404, 'Endpoint not found');
   } catch (error) {

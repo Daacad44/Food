@@ -959,6 +959,31 @@ CREATE UNIQUE INDEX "Customer_email_key" ON "Customer"("email");
 END
 $botan_migration$;
 
+DO $botan_migration$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202610240001_daljirconnect' AND rolled_back_at IS NULL AND finished_at IS NULL) THEN
+    RAISE EXCEPTION 'Unfinished migration: 202610240001_daljirconnect. Resolve it before running setup.';
+  ELSIF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202610240001_daljirconnect' AND rolled_back_at IS NULL AND finished_at IS NOT NULL) THEN
+    IF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202610240001_daljirconnect' AND rolled_back_at IS NULL AND checksum <> '2262b9b6109189fe15ab6f97356cb20640b6efe58d62a0338dd8084034117895') THEN
+      RAISE EXCEPTION 'Migration checksum mismatch: 202610240001_daljirconnect. No changes applied.';
+    END IF;
+    RAISE NOTICE 'Already applied: 202610240001_daljirconnect';
+  ELSE
+-- DaljirConnect (WhatsApp ordering): orders taken in chat, linked to their DaljirConnect id.
+ALTER TABLE "Order" ADD COLUMN "channel" TEXT;
+ALTER TABLE "Order" ADD COLUMN "externalRef" TEXT;
+CREATE UNIQUE INDEX "Order_externalRef_key" ON "Order"("externalRef");
+
+-- Pushes to DaljirConnect go through the outbox; the last failure is kept for the settings page.
+ALTER TABLE "OutboxEvent" ADD COLUMN "lastError" TEXT;
+CREATE INDEX "OutboxEvent_topic_status_idx" ON "OutboxEvent"("topic", "status");
+
+    INSERT INTO public."_prisma_migrations" (id, checksum, finished_at, migration_name, applied_steps_count)
+    VALUES (gen_random_uuid()::text, '2262b9b6109189fe15ab6f97356cb20640b6efe58d62a0338dd8084034117895', now(), '202610240001_daljirconnect', 1);
+  END IF;
+END
+$botan_migration$;
+
 ALTER TABLE public."_prisma_migrations" ENABLE ROW LEVEL SECURITY;
 COMMIT;
 SELECT migration_name, finished_at FROM public."_prisma_migrations" WHERE rolled_back_at IS NULL ORDER BY migration_name;

@@ -10,6 +10,7 @@ import {
   type CheckoutInput,
 } from './domain';
 import { digest, trackingToken, type Actor } from './security';
+import { queueOrderSync } from './daljir-queue';
 type Tx = Prisma.TransactionClient;
 export async function transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -35,7 +36,11 @@ export async function restaurant(tx: Tx = db) {
   ensure(r, 'Restaurant setup incomplete', 503);
   return r;
 }
-export async function quote(tx: Tx, input: CheckoutInput, staff = false) {
+export interface QuoteOptions {
+  /** Orders from chat (DaljirConnect) can't pick modifier options: required choices are left to the staff. */
+  skipRequiredModifiers?: boolean;
+}
+export async function quote(tx: Tx, input: CheckoutInput, staff = false, opts: QuoteOptions = {}) {
   const r = await restaurant(tx),
     settings = r.settings;
   ensure(settings && r.isAcceptingOrders, 'Maqaayaddu hadda dalab ma qaadanayso', 409);
@@ -90,8 +95,11 @@ export async function quote(tx: Tx, input: CheckoutInput, staff = false) {
     });
     for (const { group } of item.modifierGroups) {
       const n = options.filter((o) => o.groupId === group.id).length;
+      const min = opts.skipRequiredModifiers
+        ? 0
+        : Math.max(group.minSelect, group.isRequired ? 1 : 0);
       ensure(
-        n >= Math.max(group.minSelect, group.isRequired ? 1 : 0) && n <= group.maxSelect,
+        n >= min && n <= group.maxSelect,
         `Doorashada ${group.name}: ${group.minSelect}–${group.maxSelect}`,
       );
     }
@@ -170,11 +178,18 @@ export async function quote(tx: Tx, input: CheckoutInput, staff = false) {
     ...calculateTotals(subtotal, discount, Number(settings.taxRate), fee),
   };
 }
+export interface OrderSource {
+  /** e.g. WHATSAPP */
+  channel: string;
+  /** the order's id in the source system (DaljirConnect) */
+  externalRef: string;
+}
 export async function createOrder(
   input: CheckoutInput,
   key: string,
   user: Actor | null,
   expectedTotal?: number,
+  source?: OrderSource,
 ) {
   if (user?.kind === 'staff')
     ensure(
@@ -196,14 +211,22 @@ export async function createOrder(
       );
       return { id: old.id, orderNumber: old.orderNumber, token, total: old.total };
     }
-    const q = await quote(tx, input, user?.kind === 'staff');
+    // Chat orders were taken by the restaurant's own assistant: opening hours were checked there and the staff
+    // approve every order, so they are quoted like a staff order.
+    const q = await quote(tx, input, user?.kind === 'staff' || Boolean(source), {
+      skipRequiredModifiers: Boolean(source),
+    });
     if (expectedTotal !== undefined)
       ensure(
         Number.isFinite(expectedTotal) && money(expectedTotal) === q.total,
         'Menu pricing changed. Review your total again.',
         409,
       );
-    ensure(user || q.restaurant.settings?.guestCheckoutEnabled, 'Guest checkout unavailable', 403);
+    ensure(
+      user || source || q.restaurant.settings?.guestCheckoutEnabled,
+      'Guest checkout unavailable',
+      403,
+    );
     const order = await tx.order.create({
       data: {
         restaurantId: q.restaurant.id,
@@ -227,6 +250,8 @@ export async function createOrder(
         tableId: q.table?.id,
         couponId: q.coupon?.id,
         notes: input.notes,
+        channel: source?.channel,
+        externalRef: source?.externalRef,
         handledById: user?.kind === 'staff' ? user.id : null,
         items: {
           create: q.rows.map((row) => ({
@@ -267,6 +292,8 @@ export async function createOrder(
       orderId: order.id,
       orderNumber: order.orderNumber,
     });
+    // Tell DaljirConnect the order's number here.
+    if (source) await queueOrderSync(tx, q.restaurant.id, source.externalRef);
     return { id: order.id, orderNumber: order.orderNumber, token, total: order.total };
   });
 }
@@ -424,6 +451,8 @@ export async function transitionOrder(
       await tx.delivery.update({ where: { id: o.delivery.id }, data: { status: 'RETURNED' } });
     await audit(tx, user, 'ORDER_STATUS', 'Order', id, { from: o.status, to });
     await event(tx, o.restaurantId, 'order.status', { orderId: id, status: to });
+    // WhatsApp orders: the customer hears about every step from DaljirConnect.
+    if (o.externalRef) await queueOrderSync(tx, o.restaurantId, o.externalRef);
     return updated;
   });
 }

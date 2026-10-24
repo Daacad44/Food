@@ -5,6 +5,7 @@ import { ensure } from './errors';
 import { money, decimal } from './domain';
 import { transaction, audit } from './orders';
 import { digest, type Actor } from './security';
+import { queueOrderSync } from './daljir-queue';
 async function syncPaymentStatus(tx: Prisma.TransactionClient, orderId: string) {
   const order = await tx.order.findUniqueOrThrow({ where: { id: orderId } }),
     payments = await tx.payment.findMany({
@@ -27,6 +28,8 @@ async function syncPaymentStatus(tx: Prisma.TransactionClient, orderId: string) 
           ? 'PENDING'
           : 'UNPAID';
   await tx.order.update({ where: { id: orderId }, data: { paymentStatus: status } });
+  if (order.externalRef && order.paymentStatus !== status)
+    await queueOrderSync(tx, order.restaurantId, order.externalRef);
 }
 export async function capturePayment(id: string, user: Actor, amount?: number) {
   return transaction(async (tx) => {
@@ -365,8 +368,13 @@ export async function finance(restaurantId: string) {
 }
 export async function processOutbox() {
   return transaction(async (tx) => {
+    // daljir.* events are sent to DaljirConnect by drainDaljir(), not turned into in-app notifications.
     const rows = await tx.outboxEvent.findMany({
-      where: { status: 'PENDING', availableAt: { lte: new Date() } },
+      where: {
+        status: 'PENDING',
+        availableAt: { lte: new Date() },
+        NOT: { topic: { startsWith: 'daljir.' } },
+      },
       take: 100,
       orderBy: { createdAt: 'asc' },
     });
