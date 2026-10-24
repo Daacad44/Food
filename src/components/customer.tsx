@@ -801,7 +801,7 @@ export function CartPage() {
     </section>
   );
 }
-export function Checkout({ pos = false }: { pos?: boolean }) {
+export function Checkout({ pos = false, initialType }: { pos?: boolean; initialType?: string }) {
   const { cart, clear, user, tr, toast } = useStore(),
     router = useRouter(),
     { data: zones } = useData<any[]>('delivery/zones'),
@@ -809,7 +809,7 @@ export function Checkout({ pos = false }: { pos?: boolean }) {
   const [form, setForm] = useState({
       guestName: '',
       guestPhone: '',
-      type: pos ? 'DINE_IN' : 'DELIVERY',
+      type: initialType || (pos ? 'DINE_IN' : 'DELIVERY'),
       deliveryAddress: '',
       zoneId: '',
       tableId: '',

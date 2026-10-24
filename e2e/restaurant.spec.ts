@@ -42,8 +42,8 @@ test('owner signs in, sees real orders, edits a menu item and opens kitchen', as
   await page.getByRole('button', { name: 'Save changes' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.goto('/kitchen');
-  await expect(page.getByRole('heading', { name: 'Kitchen display', exact: true })).toBeVisible();
-  await expect(page.getByRole('heading', { name: /Preparing/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /^Jikada/ })).toBeVisible();
+  await expect(page.getByRole('heading', { name: /Diyaarin/ })).toBeVisible();
   await page.goto('/admin/reports');
   await expect(page.getByRole('heading', { name: 'A clearer picture of Botan' })).toBeVisible();
 });

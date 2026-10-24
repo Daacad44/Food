@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import './staff.css';
 import { StoreProvider } from '@/components/store';
 export const metadata: Metadata = {
   title: { default: 'Botan Restaurant · Cunto fiican. Nolol fiican.', template: '%s · Botan' },
