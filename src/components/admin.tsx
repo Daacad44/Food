@@ -3,72 +3,105 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  LayoutDashboard,
-  ShoppingBag,
-  UtensilsCrossed,
-  Users,
   Boxes,
-  Truck,
-  Wallet,
   Settings,
-  ClipboardList,
-  ChefHat,
   LogOut,
   ArrowUpRight,
   Plus,
   Search,
   X,
   Check,
-  Clock,
   RefreshCw,
   Printer,
   Download,
   Menu as MenuIcon,
-  Leaf,
   Table2,
-  Bell,
-  Tag,
-  Store,
   TrendingUp,
-  ShieldCheck,
 } from 'lucide-react';
 import { api, useData, useStore } from './store';
-import { Brand, Checkout, FoodCard, Loading, Notice, statusLabel } from './customer';
+import { Brand, Checkout, Loading, Notice, statusLabel } from './customer';
 import { formatMoney, transitions } from '@/lib/domain';
-const links = [
-  ['OVERVIEW', '/admin', 'Dashboard', LayoutDashboard, ['OWNER', 'MANAGER', 'ACCOUNTANT']],
-  ['', '/admin/orders', 'Live orders', ShoppingBag, ['OWNER', 'MANAGER', 'CASHIER', 'ACCOUNTANT']],
-  ['RESTAURANT', '/admin/menu', 'Menu items', UtensilsCrossed, ['OWNER', 'MANAGER']],
-  ['', '/admin/categories', 'Categories', ClipboardList, ['OWNER', 'MANAGER']],
-  ['', '/admin/modifiers', 'Modifiers', Plus, ['OWNER', 'MANAGER']],
-  ['', '/admin/customers', 'Customers', Users, ['OWNER', 'MANAGER']],
-  ['', '/admin/tables', 'Tables', Table2, ['OWNER', 'MANAGER', 'CASHIER']],
-  ['', '/admin/coupons', 'Offers & coupons', Tag, ['OWNER', 'MANAGER']],
-  ['OPERATIONS', '/kitchen', 'Kitchen display', ChefHat, ['OWNER', 'MANAGER', 'CHEF']],
-  ['', '/pos', 'Cashier / POS', Store, ['OWNER', 'MANAGER', 'CASHIER']],
-  ['', '/admin/delivery', 'Delivery', Truck, ['OWNER', 'MANAGER']],
-  ['', '/admin/delivery/zones', 'Delivery zones', MapIcon, ['OWNER', 'MANAGER']],
-  ['', '/rider', 'Rider portal', Truck, ['OWNER', 'MANAGER', 'RIDER']],
-  ['', '/admin/inventory', 'Inventory', Boxes, ['OWNER', 'MANAGER']],
-  ['', '/admin/suppliers', 'Suppliers', Users, ['OWNER', 'MANAGER']],
-  ['', '/admin/purchases', 'Purchases', ClipboardList, ['OWNER', 'MANAGER', 'ACCOUNTANT']],
-  [
-    'BUSINESS',
-    '/admin/payments',
-    'Payments',
-    Wallet,
-    ['OWNER', 'MANAGER', 'ACCOUNTANT', 'CASHIER'],
-  ],
-  ['', '/admin/expenses', 'Expenses', Wallet, ['OWNER', 'MANAGER', 'ACCOUNTANT']],
-  ['', '/admin/reports', 'Finance & reports', TrendingUp, ['OWNER', 'MANAGER', 'ACCOUNTANT']],
-  ['', '/admin/staff', 'Team & access', ShieldCheck, ['OWNER']],
-  ['', '/admin/notifications', 'Notifications', Bell, ['OWNER', 'MANAGER']],
-  ['', '/admin/reviews', 'Customer reviews', Users, ['OWNER', 'MANAGER']],
-  ['', '/admin/audit', 'Audit trail', ClipboardList, ['OWNER', 'MANAGER']],
-  ['', '/admin/settings', 'Settings', Settings, ['OWNER', 'MANAGER']],
-] as const;
-function MapIcon({ size = 18 }: { size?: number }) {
-  return <Truck size={size} />;
+const groups: { title: string; items: [href: string, label: string, roles: string[]][] }[] = [
+  {
+    title: 'GUUD',
+    items: [
+      ['/admin', 'Dashboard', ['OWNER', 'MANAGER', 'ACCOUNTANT']],
+      ['/admin/orders', 'Dalabyada tooska', ['OWNER', 'MANAGER', 'CASHIER', 'ACCOUNTANT']],
+      ['/admin/reports', 'Warbixinno', ['OWNER', 'MANAGER', 'ACCOUNTANT']],
+    ],
+  },
+  {
+    title: 'MAQAAYADDA',
+    items: [
+      ['/admin/menu', 'Menu', ['OWNER', 'MANAGER']],
+      ['/admin/categories', 'Qaybaha', ['OWNER', 'MANAGER']],
+      ['/admin/modifiers', 'Modifiers', ['OWNER', 'MANAGER']],
+      ['/admin/tables', 'Miisaska', ['OWNER', 'MANAGER', 'CASHIER']],
+      ['/admin/coupons', 'Coupons', ['OWNER', 'MANAGER']],
+      ['/admin/customers', 'Customers', ['OWNER', 'MANAGER']],
+    ],
+  },
+  {
+    title: 'HAWLGALKA',
+    items: [
+      ['/kitchen', 'Jikada', ['OWNER', 'MANAGER', 'CHEF']],
+      ['/pos', 'POS', ['OWNER', 'MANAGER', 'CASHIER']],
+      ['/admin/delivery', 'Delivery', ['OWNER', 'MANAGER']],
+      ['/admin/delivery/zones', 'Delivery zones', ['OWNER', 'MANAGER']],
+      ['/rider', 'Rider portal', ['OWNER', 'MANAGER', 'RIDER']],
+      ['/admin/inventory', 'Kaydka', ['OWNER', 'MANAGER']],
+      ['/admin/suppliers', 'Suppliers', ['OWNER', 'MANAGER']],
+      ['/admin/purchases', 'Iibsiga', ['OWNER', 'MANAGER', 'ACCOUNTANT']],
+      ['/admin/staff', 'Shaqaalaha', ['OWNER']],
+    ],
+  },
+  {
+    title: 'GANACSIGA',
+    items: [
+      ['/admin/payments', 'Payments', ['OWNER', 'MANAGER', 'ACCOUNTANT', 'CASHIER']],
+      ['/admin/expenses', 'Expenses', ['OWNER', 'MANAGER', 'ACCOUNTANT']],
+      ['/admin/notifications', 'Notifications', ['OWNER', 'MANAGER']],
+      ['/admin/reviews', 'Customer reviews', ['OWNER', 'MANAGER']],
+      ['/admin/audit', 'Audit trail', ['OWNER', 'MANAGER']],
+      ['/admin/settings', 'Settings', ['OWNER', 'MANAGER']],
+    ],
+  },
+];
+const timeZone = 'Africa/Mogadishu',
+  weekdays = ['Axad', 'Isniin', 'Talaado', 'Arbaco', 'Khamiis', 'Jimco', 'Sabti'],
+  weekdayShort = ['Axd', 'Isn', 'Tal', 'Arb', 'Kha', 'Jim', 'Sab'],
+  months = ['Jan', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Lul', 'Ago', 'Seb', 'Okt', 'Nof', 'Dis'],
+  orderTypes: Record<string, string> = {
+    DELIVERY: 'Delivery',
+    PICKUP: 'Pickup',
+    DINE_IN: 'Dine-in',
+  };
+// YYYY-MM-DD in restaurant time, matching the day keys from admin/summary.
+const localDate = (d: Date = new Date()) =>
+  new Intl.DateTimeFormat('en-CA', { timeZone }).format(d);
+const shiftDate = (date: string, days: number) => {
+  const d = new Date(date + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d;
+};
+// Order numbers look like BTN-MVM8Z12H-6B91; floor screens show the short suffix.
+const shortNumber = (orderNumber: string) => '#' + orderNumber.split('-').pop();
+const clock = (d: Date | string | number) =>
+  new Date(d).toLocaleTimeString('en-GB', { timeZone, hour: '2-digit', minute: '2-digit' });
+function Wordmark() {
+  return (
+    <span className="wordmark">
+      botan<span>.</span>
+    </span>
+  );
+}
+function useNow(interval: number) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), interval);
+    return () => clearInterval(timer);
+  }, [interval]);
+  return now;
 }
 export function StaffShell({ path, children }: { path: string; children: React.ReactNode }) {
   const { user, refreshUser } = useStore(),
@@ -91,41 +124,45 @@ export function StaffShell({ path, children }: { path: string; children: React.R
         <Link href="/">← Customer website</Link>
       </main>
     );
-  const title = links.find((l) => l[1] === path)?.[2] || 'Botan workspace';
+  const visible = groups
+      .map((g) => ({
+        title: g.title,
+        items: g.items.filter((i) => i[2].includes(user.role)),
+      }))
+      .filter((g) => g.items.length),
+    title = groups.flatMap((g) => g.items).find((i) => i[0] === path)?.[1] || 'Botan workspace';
   return (
     <div className="staff-app">
       <aside className={'sidebar ' + (open ? 'is-open' : '')}>
-        <Brand light />
-        <div className="workspace-label">
-          <span className="status-dot" /> BOTAN WORKSPACE <small>Single restaurant</small>
-        </div>
+        <Link href="/admin" className="sidebar-brand" onClick={() => setOpen(false)}>
+          <Wordmark />
+        </Link>
         <nav>
-          {links
-            .filter((l) => (l[4] as readonly string[]).includes(user.role))
-            .map(([group, href, label, Icon]) => (
-              <div key={href}>
-                {group && <div className="nav-group">{group}</div>}
+          {visible.map((g) => (
+            <div className="nav-section" key={g.title}>
+              <div className="nav-group">{g.title}</div>
+              {g.items.map(([href, label]) => (
                 <Link
+                  key={href}
                   className={path === href ? 'active' : ''}
                   href={href}
                   onClick={() => setOpen(false)}
                 >
-                  <Icon size={17} />
-                  <span>{label}</span>
-                  {path === href && <span className="nav-active-dot" />}
+                  {label}
                 </Link>
-              </div>
-            ))}
+              ))}
+            </div>
+          ))}
         </nav>
         <div className="sidebar-bottom">
           <Link href="/" target="_blank">
-            <ArrowUpRight size={16} /> Customer website
+            Customer website <ArrowUpRight size={14} />
           </Link>
           <div className="staff-profile">
             <div className="staff-avatar">{user.name.slice(0, 1)}</div>
             <div>
               <b>{user.name}</b>
-              <small>{user.role.toLowerCase()}</small>
+              <small>{user.role}</small>
             </div>
             <button
               className="icon-button"
@@ -141,31 +178,24 @@ export function StaffShell({ path, children }: { path: string; children: React.R
           </div>
         </div>
       </aside>
-      <div className="staff-main">
+      <div
+        className={
+          'staff-main ' +
+          (path.startsWith('/kitchen') ? 'is-dark' : path === '/pos' ? 'is-flush' : '')
+        }
+      >
         <header className="staff-header">
-          <div>
-            <button
-              className="icon-button mobile-nav"
-              aria-label="Open staff menu"
-              onClick={() => setOpen(!open)}
-            >
-              <MenuIcon />
-            </button>
-            <span>
-              Workspace <span className="breadcrumb-separator">/</span> <b>{title}</b>
-            </span>
-          </div>
-          <div>
-            <span className="live-label">
-              <span className="status-dot" /> Connected workspace
-            </span>
-            <span className="staff-avatar small-avatar">{user.name[0]}</span>
-          </div>
+          <button
+            className="icon-button mobile-nav"
+            aria-label="Open staff menu"
+            onClick={() => setOpen(!open)}
+          >
+            <MenuIcon />
+          </button>
+          <b>{title}</b>
+          <span className="staff-avatar small-avatar">{user.name[0]}</span>
         </header>
         <main className="staff-content">{children}</main>
-        <div className="staff-footer">
-          BOTAN RESTAURANT <span>Made with care · Africa/Mogadishu</span>
-        </div>
       </div>
     </div>
   );
@@ -192,107 +222,113 @@ export function PageTitle({
     </div>
   );
 }
+const liveStatus: Record<string, [string, string]> = {
+  PENDING_APPROVAL: ['Cusub', 'new'],
+  CONFIRMED: ['Cusub', 'new'],
+  PREPARING: ['Diyaarin', 'preparing'],
+  READY: ['Diyaar', 'ready'],
+  OUT_FOR_DELIVERY: ['Jidka', 'road'],
+};
 export function Dashboard() {
   const { data, error } = useData('admin/summary', 15000),
-    { data: orders } = useData<any[]>('admin/orders?limit=6', 10000),
+    { data: orders } = useData<any[]>('admin/orders?limit=5', 10000),
     { user } = useStore();
+  const today = localDate(),
+    now = shiftDate(today, 0),
+    amounts = new Map<string, number>((data?.days || []).map((d: any) => [d.date, d.amount])),
+    week = Array.from({ length: 7 }, (_, n) => {
+      const d = shiftDate(today, n - 6),
+        date = d.toISOString().slice(0, 10);
+      return { date, day: weekdayShort[d.getUTCDay()], amount: amounts.get(date) || 0 };
+    }),
+    peak = Math.max(1, ...week.map((d) => d.amount)),
+    todaySales = week[6].amount,
+    lastWeek = amounts.get(shiftDate(today, -7).toISOString().slice(0, 10)),
+    change = lastWeek ? Math.round(((todaySales - lastWeek) / Math.abs(lastWeek)) * 100) : null;
+  const kpis: [string, string, string, string][] = [
+    [
+      'Iibka maanta',
+      data ? formatMoney(todaySales) : '—',
+      change === null
+        ? 'CASH · USD'
+        : `${change >= 0 ? '+' : '−'}${Math.abs(change)}% vs. ${weekdays[now.getUTCDay()]} hore`,
+      change !== null && change >= 0 ? 'up' : '',
+    ],
+    ['Dalabyo', data ? String(data.orderCount) : '—', 'Dhammaan', ''],
+    ['Socda', data ? String(data.activeOrders) : '—', 'Hadda', data?.activeOrders ? 'hot' : ''],
+    ['Celcelis', data ? formatMoney(data.averageOrder) : '—', 'Dalab kasta', ''],
+  ];
   return (
-    <>
-      <PageTitle
-        eyebrow="A FRESH LOOK AT YOUR RESTAURANT"
-        title={`Soo dhowow, ${user?.name.split(' ')[0] || 'Botan'}.`}
-        description="Here’s what’s happening at Botan. Let’s make it a good day."
-        action={
-          <Link href="/pos" className="button">
-            <Plus size={17} /> New order
-          </Link>
-        }
-      />
+    <div className="dash">
+      <div className="dash-head">
+        <div>
+          <span className="mono-label">
+            {weekdays[now.getUTCDay()]} {now.getUTCDate()} {months[now.getUTCMonth()]} · Muqdisho
+          </span>
+          <h1>Soo dhowow, {user?.name.split(' ')[0] || 'Botan'}.</h1>
+        </div>
+        <Link href="/pos" className="pill-button">
+          + Dalab cusub
+        </Link>
+      </div>
       {error && <Notice error={error} />}
-      <div className="stats-grid">
-        {[
-          ['Net sales', data?.netSales, Wallet, true],
-          ['Total orders', data?.orderCount, ShoppingBag, false],
-          ['In progress', data?.activeOrders, Clock, false],
-          ['Average order', data?.averageOrder, TrendingUp, true],
-        ].map(([label, value, Icon, currency]: any) => (
-          <div className="stat-card" key={label}>
-            <div>
-              <span>{label}</span>
-              <Icon size={18} />
-            </div>
-            <strong>{value === undefined ? '—' : currency ? formatMoney(value) : value}</strong>
-            <small>All recorded orders · USD</small>
+      <div className="kpi-row">
+        {kpis.map(([label, value, note, tone]) => (
+          <div className="kpi" key={label}>
+            <span className="mono-label">{label}</span>
+            <strong>{value}</strong>
+            <small className={tone}>{note}</small>
           </div>
         ))}
       </div>
-      <div className="dashboard-grid">
-        <div className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Revenue overview</h2>
-              <p>Captures less refunds · Mogadishu dates</p>
-            </div>
-            <span className="badge">Cash payments</span>
+      <div className="dash-grid">
+        <section className="revenue-card">
+          <div className="card-head">
+            <h2>Dakhliga · 7 maalmood</h2>
+            <span className="mono-label">Cash · USD</span>
           </div>
-          <RevenueChart days={data?.days || []} />
-        </div>
-        <div className="panel">
-          <div className="panel-heading">
-            <div>
-              <h2>Table favourites</h2>
-              <p>Most ordered dishes</p>
-            </div>
-            <FlameIcon />
-          </div>
-          {data?.topItems?.length ? (
-            data.topItems.map((i: any, n: number) => (
-              <div className="top-item" key={i.name}>
-                <span className="rank">0{n + 1}</span>
-                <span>{i.name}</span>
-                <b>
-                  {i.quantity}
-                  <small> sold</small>
-                </b>
+          <div className="revenue-bars">
+            {week.map((d, n) => (
+              <div key={d.date}>
+                <span>${Math.round(d.amount)}</span>
+                <span className="bar-track">
+                  <i
+                    className={n === 6 ? 'today' : ''}
+                    style={{ height: `${(Math.max(0, d.amount) / peak) * 100}%` }}
+                  />
+                </span>
+                <span>{d.day}</span>
               </div>
-            ))
-          ) : (
-            <div className="empty compact">
-              <UtensilsCrossed size={30} />
-              <p>Your first orders will appear here.</p>
-            </div>
-          )}
-        </div>
-      </div>
-      <div className="panel">
-        <div className="panel-heading">
-          <div>
-            <h2>Recent orders</h2>
-            <p>Fresh from your customers</p>
+            ))}
           </div>
-          <Link href="/admin/orders" className="text-link">
-            View all orders <ArrowUpRight size={15} />
-          </Link>
-        </div>
-        <OrdersTable orders={orders || []} />
+        </section>
+        <section className="live-card">
+          <div className="card-head">
+            <h2>Dalabyada tooska ah</h2>
+            <Link href="/admin/orders">Dhammaan ↗</Link>
+          </div>
+          {orders?.map((o) => {
+            const [label, tone] = liveStatus[o.status] || [statusLabel[o.status] || o.status, ''];
+            return (
+              <Link className="live-row" href={'/admin/orders/' + o.id} key={o.id}>
+                <span className="mono" title={o.orderNumber}>
+                  {shortNumber(o.orderNumber)}
+                </span>
+                <div>
+                  <b>{o.table ? `Miis ${o.table.tableNumber}` : o.guestName}</b>
+                  <small>
+                    {orderTypes[o.type] || o.type} · {formatMoney(o.total)}
+                  </small>
+                </div>
+                <span className={'status-pill ' + tone}>{label}</span>
+              </Link>
+            );
+          })}
+          {orders && !orders.length && <p className="muted">Dalabyo weli ma jiraan.</p>}
+        </section>
       </div>
-      <div className="workspace-banner">
-        <span>
-          <Leaf size={24} />
-        </span>
-        <div>
-          <h3>A little care goes a long way.</h3>
-          <p>Keep your menu fresh, your kitchen moving, and your customers smiling.</p>
-        </div>
-        <Link href="/admin/menu">
-          Manage menu <ArrowUpRight size={18} />
-        </Link>
-      </div>
-    </>
+    </div>
   );
-}
-function FlameIcon() {
-  return <ChefHat size={22} />;
 }
 function RevenueChart({ days }: { days: any[] }) {
   const recent = days.slice(-12),
@@ -1292,12 +1328,25 @@ function RecipeList() {
     </>
   );
 }
+const kitchenColumns = {
+  live: [
+    ['CONFIRMED', 'Cusub', 'new'],
+    ['PREPARING', 'Diyaarin', 'preparing'],
+    ['READY', 'Diyaar', 'ready'],
+  ],
+  history: [['COMPLETED', 'La dhammeeyey', 'done']],
+} as const;
+const elapsed = (from: string, now: number) => {
+  const seconds = Math.max(0, Math.floor((now - new Date(from).getTime()) / 1000));
+  return `${String(Math.floor(seconds / 60)).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
+};
 export function Kitchen() {
   const { data, error, refresh } = useData<any[]>('kitchen/orders', 4000),
     { toast } = useStore(),
-    [tab, setTab] = useState('live'),
+    [tab, setTab] = useState<'live' | 'history'>('live'),
     [sound, setSound] = useState(false),
-    known = useRef<Set<string>>(new Set());
+    known = useRef<Set<string>>(new Set()),
+    now = useNow(1000);
   useEffect(() => {
     if (!data) return;
     const added = data.some((o) => !known.current.has(o.id) && o.status === 'CONFIRMED');
@@ -1324,229 +1373,316 @@ export function Kitchen() {
     }
   }
   return (
-    <>
-      <PageTitle
-        eyebrow="THE HEART OF BOTAN"
-        title="Kitchen display"
-        description="Fresh tickets. Clear priorities. Good food, on time."
-        action={
-          <button className="button outline" onClick={() => setSound(!sound)}>
-            <Bell size={16} /> Sound {sound ? 'on' : 'off'}
+    <div className="kds">
+      <div className="kds-bar">
+        <div>
+          <Wordmark />
+          <h1 className="mono-label">Jikada · {clock(now)}</h1>
+        </div>
+        <div>
+          <button className="ghost-pill" aria-pressed={sound} onClick={() => setSound(!sound)}>
+            {sound ? '🔈 Codka: daaran' : '🔇 Codka: demsan'}
           </button>
-        }
-      />
-      {error && <Notice error={error} />}
-      <div className="tabs spaced">
-        <button className={tab === 'live' ? 'active' : ''} onClick={() => setTab('live')}>
-          Live kitchen
-        </button>
-        <button className={tab === 'history' ? 'active' : ''} onClick={() => setTab('history')}>
-          Completed history
-        </button>
-        <span className="muted">Refreshes every 4 seconds</span>
+          <button
+            className="ghost-pill"
+            aria-pressed={tab === 'history'}
+            onClick={() => setTab(tab === 'live' ? 'history' : 'live')}
+          >
+            {tab === 'live' ? 'Taariikh' : '← Tooska'}
+          </button>
+          <span className={'connection ' + (error ? 'offline' : '')}>
+            <i /> {error ? 'Xiriir la’aan' : 'Ku xiran'}
+          </span>
+        </div>
       </div>
-      <div className="kitchen-board">
-        {(tab === 'live' ? ['CONFIRMED', 'PREPARING', 'READY'] : ['COMPLETED']).map((status) => (
-          <div className="kitchen-column" key={status}>
-            <h2>
-              <span className={'status-dot ' + status} />
-              {status === 'CONFIRMED'
-                ? 'New orders'
-                : status === 'PREPARING'
-                  ? 'Preparing'
-                  : status === 'READY'
-                    ? 'Ready to serve'
-                    : 'Completed'}
-              <b>{data?.filter((o) => o.status === status).length || 0}</b>
-            </h2>
-            {data
-              ?.filter((o) => o.status === status)
-              .map((o) => (
-                <article className="ticket" key={o.id}>
-                  <div className="ticket-heading">
-                    <b>{o.orderNumber}</b>
-                    <span>
-                      <Clock size={13} />
-                      {Math.max(
-                        0,
-                        Math.floor((Date.now() - new Date(o.createdAt).getTime()) / 60000),
-                      )}
-                      m
+      <div className={'kds-board ' + tab}>
+        {kitchenColumns[tab].map(([status, title, tone]) => {
+          const tickets = data?.filter((o) => o.status === status) || [];
+          return (
+            <section className={'kds-column ' + tone} key={status}>
+              <h2>
+                {title} <span>{tickets.length}</span>
+              </h2>
+              <div className="kds-tickets">
+                {tickets.map((o) => (
+                  <article className={'kds-ticket ' + tone} key={o.id}>
+                    <div className="kds-ticket-head">
+                      <b title={o.orderNumber}>{shortNumber(o.orderNumber)}</b>
+                      <span>
+                        {status === 'COMPLETED' ? clock(o.createdAt) : elapsed(o.createdAt, now)}
+                      </span>
+                    </div>
+                    <span className="kds-ticket-type">
+                      {o.table ? `Miis ${o.table.tableNumber}` : orderTypes[o.type] || o.type} ·{' '}
+                      {clock(o.createdAt)}
                     </span>
-                  </div>
-                  <div className="ticket-type">
-                    {o.type} {o.table && `· Table ${o.table.tableNumber}`}
-                  </div>
-                  {o.items.map((i: any) => (
-                    <div className="ticket-line" key={i.id}>
-                      <strong>{i.quantity}×</strong>
-                      <div>
-                        <b>{i.nameSnapshot}</b>
-                        {i.modifiers?.length > 0 && (
-                          <small>{i.modifiers.map((m: any) => m.nameSnapshot).join(', ')}</small>
-                        )}
-                        {i.specialInstructions && <p className="note">{i.specialInstructions}</p>}
-                      </div>
-                    </div>
-                  ))}
-                  {o.notes && <p className="note">{o.notes}</p>}
-                  {status === 'CONFIRMED' && (
-                    <button className="button full" onClick={() => void move(o, 'PREPARING')}>
-                      <ChefHat size={16} /> Start preparing
-                    </button>
-                  )}
-                  {status === 'PREPARING' && (
-                    <button className="button full" onClick={() => void move(o, 'READY')}>
-                      <Check size={16} /> Mark ready
-                    </button>
-                  )}
-                  {status === 'READY' && (
-                    <div className="ready-note">
-                      <Check size={15} /> Waiting for pickup / rider
-                    </div>
-                  )}
-                </article>
-              ))}
-            {!data?.some((o) => o.status === status) && (
-              <div className="empty compact">All clear here.</div>
-            )}
-          </div>
-        ))}
+                    <ul>
+                      {o.items.map((i: any) => (
+                        <li key={i.id}>
+                          {i.quantity}× {i.nameSnapshot}
+                          {i.modifiers?.length > 0 && (
+                            <small>{i.modifiers.map((m: any) => m.nameSnapshot).join(', ')}</small>
+                          )}
+                          {i.specialInstructions && (
+                            <p className="kds-note">“{i.specialInstructions}”</p>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                    {o.notes && <p className="kds-note">“{o.notes}”</p>}
+                    {status === 'CONFIRMED' && (
+                      <button onClick={() => void move(o, 'PREPARING')}>Bilow diyaarinta</button>
+                    )}
+                    {status === 'PREPARING' && (
+                      <button onClick={() => void move(o, 'READY')}>Diyaar</button>
+                    )}
+                    {status === 'READY' && <span className="kds-waiting">Sugaya qaadis</span>}
+                  </article>
+                ))}
+                {data && !tickets.length && <p className="kds-empty">Ticket ma jiro.</p>}
+              </div>
+            </section>
+          );
+        })}
       </div>
-    </>
+    </div>
   );
 }
+const posSections = [
+  ['/pos', 'Terminal', 'terminal'],
+  ['/pos/tables', 'Miisaska', 'tables'],
+  ['/pos/bills', 'Active bills', 'bills'],
+  ['/pos/payments', 'Payments', 'payments'],
+  ['/pos/shifts', 'Shifts', 'shifts'],
+] as const;
 export function Pos({ section }: { section: string }) {
   const { data: items, error } = useData<any[]>(section === 'terminal' ? 'menu/items' : null),
-    { data: tables, refresh } = useData<any[]>(section === 'tables' ? 'pos/tables' : null),
+    { data: tables } = useData<any[]>(section === 'tables' ? 'pos/tables' : null),
     { data: orders } = useData<any[]>(section === 'bills' ? 'pos/orders' : null),
+    { data: shifts } = useData<any[]>(section === 'terminal' ? 'pos/shifts' : null),
     [search, setSearch] = useState(''),
+    [category, setCategory] = useState(''),
+    [type, setType] = useState('DINE_IN'),
     [checkout, setCheckout] = useState(false),
-    { cart, quantity } = useStore();
-  return (
-    <>
-      <PageTitle
-        title="The Botan counter"
-        description="Good service starts here. Dine-in, pickup and delivery."
-      />
-      <div className="tabs spaced">
-        {[
-          ['/pos', 'Terminal'],
-          ['/pos/tables', 'Tables'],
-          ['/pos/bills', 'Active bills'],
-          ['/pos/payments', 'Payments'],
-          ['/pos/shifts', 'Shifts'],
-        ].map(([href, label]) => (
-          <Link key={href} href={href}>
-            {label}
-          </Link>
-        ))}
-      </div>
-      {section === 'terminal' ? (
-        checkout ? (
+    { cart, add, quantity, clear, user } = useStore();
+  const sections = (
+    <nav className="pos-sections">
+      {posSections.map(([href, label, key]) => (
+        <Link key={href} href={href} className={section === key ? 'active' : ''}>
+          {label}
+        </Link>
+      ))}
+    </nav>
+  );
+  if (section !== 'terminal')
+    return (
+      <>
+        {sections}
+        {section === 'tables' ? (
           <>
-            <button className="text-link" onClick={() => setCheckout(false)}>
-              ← Back to terminal
-            </button>
-            <Checkout pos />
-          </>
-        ) : (
-          <div className="pos-layout">
-            <div>
-              <label className="search-field">
-                <Search size={17} />
-                <input
-                  placeholder="Search the menu"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  aria-label="Search POS menu"
-                />
-              </label>
-              {error && <Notice error={error} />}
-              <div className="food-grid pos-grid">
-                {items
-                  ?.filter((i) => i.name.toLowerCase().includes(search.toLowerCase()))
-                  .map((i) => (
-                    <FoodCard item={i} key={i.id} />
+            <PageTitle title="Miisaska" description="QR codes and open bills for every table." />
+            <div className="tables-grid">
+              {tables?.map((t) => (
+                <div className={'table-card ' + t.status} key={t.id}>
+                  <Table2 size={35} />
+                  <h2>Table {t.tableNumber}</h2>
+                  <p>{t.capacity} seats</p>
+                  <img
+                    className="table-qr"
+                    src={'/api/v1/pos/tables/' + t.id + '/qr'}
+                    alt={'QR code for table ' + t.tableNumber}
+                  />
+                  <a
+                    className="text-link"
+                    href={'/api/v1/pos/tables/' + t.id + '/qr'}
+                    target="_blank"
+                  >
+                    Open printable QR
+                  </a>
+                  <span className={'badge ' + t.status}>{t.status}</span>
+                  {t.orders.map((o: any) => (
+                    <Link href={'/admin/orders/' + o.id} key={o.id}>
+                      {o.orderNumber} · {formatMoney(o.total)}
+                    </Link>
                   ))}
-              </div>
-            </div>
-            <div className="summary-card">
-              <h2>Current bill</h2>
-              {cart.map((i) => (
-                <div className="pos-cart-line" key={i.key}>
-                  <b>{i.name}</b>
-                  <div>
-                    <QuantitySmall value={i.quantity} onChange={(n) => quantity(i.key, n)} />
-                    <span>{formatMoney(i.price * i.quantity)}</span>
-                  </div>
                 </div>
               ))}
-              {cart.length === 0 && <p className="muted">Choose a dish to start a bill.</p>}
-              <div className="summary-row total">
-                <span>Subtotal</span>
-                <b>{formatMoney(cart.reduce((s, i) => s + i.price * i.quantity, 0))}</b>
-              </div>
-              <button
-                className="button full"
-                disabled={!cart.length}
-                onClick={() => setCheckout(true)}
-              >
-                Checkout <ArrowUpRight size={17} />
-              </button>
             </div>
-          </div>
-        )
-      ) : section === 'tables' ? (
-        <div className="tables-grid">
-          {tables?.map((t) => (
-            <div className={'table-card ' + t.status} key={t.id}>
-              <Table2 size={35} />
-              <h2>Table {t.tableNumber}</h2>
-              <p>{t.capacity} seats</p>
-              <img
-                className="table-qr"
-                src={'/api/v1/pos/tables/' + t.id + '/qr'}
-                alt={'QR code for table ' + t.tableNumber}
+          </>
+        ) : section === 'bills' ? (
+          <>
+            <PageTitle title="Active bills" description="Open orders waiting to be closed." />
+            <div className="panel">
+              <OrdersTable
+                orders={(orders || []).filter(
+                  (o) => !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status),
+                )}
               />
-              <a className="text-link" href={'/api/v1/pos/tables/' + t.id + '/qr'} target="_blank">
-                Open printable QR
-              </a>
-              <span className={'badge ' + t.status}>{t.status}</span>
-              {t.orders.map((o: any) => (
-                <Link href={'/admin/orders/' + o.id} key={o.id}>
-                  {o.orderNumber} · {formatMoney(o.total)}
+            </div>
+          </>
+        ) : section === 'payments' ? (
+          <Payments />
+        ) : (
+          <Shifts />
+        )}
+      </>
+    );
+  if (checkout)
+    return (
+      <div className="pos-checkout">
+        <button className="text-link" onClick={() => setCheckout(false)}>
+          ← Back to terminal
+        </button>
+        <Checkout pos initialType={type} />
+      </div>
+    );
+  const categories = [...new Set((items || []).map((i) => i.category?.name).filter(Boolean))],
+    shift = shifts?.find((s) => s.status === 'OPEN' && s.cashierId === user.id),
+    count = cart.reduce((s, i) => s + i.quantity, 0),
+    subtotal = cart.reduce((s, i) => s + i.price * i.quantity, 0);
+  return (
+    <div className="pos">
+      <div className="pos-menu">
+        {sections}
+        <div className="pos-toolbar">
+          <div className="pill-row">
+            {['', ...categories].map((c) => (
+              <button
+                key={c}
+                className={'pill ' + (category === c ? 'active' : '')}
+                onClick={() => setCategory(c)}
+              >
+                {c || 'Dhammaan'}
+              </button>
+            ))}
+            <label className="pill pill-search">
+              <Search size={16} />
+              <input
+                placeholder="Raadi"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                aria-label="Search POS menu"
+              />
+            </label>
+          </div>
+          {shift ? (
+            <span className="mono-label">
+              Shift · furan {clock(shift.openedAt)} · {shift.cashier.fullName.split(' ')[0]}
+            </span>
+          ) : (
+            <Link className="mono-label" href="/pos/shifts">
+              Shift · xiran ↗
+            </Link>
+          )}
+        </div>
+        {error && <Notice error={error} />}
+        <div className="pos-tiles">
+          {items
+            ?.filter(
+              (i) =>
+                (!category || i.category?.name === category) &&
+                i.name.toLowerCase().includes(search.toLowerCase()),
+            )
+            .map((i) => {
+              const inBill = cart
+                  .filter((l) => l.menuItemId === i.id)
+                  .reduce((s, l) => s + l.quantity, 0),
+                body = (
+                  <>
+                    <span className="pos-tile-top">
+                      <span>{i.category?.name}</span>
+                      <span>{!i.isAvailable ? 'Dhammaaday' : inBill ? '×' + inBill : ''}</span>
+                    </span>
+                    <span className="pos-tile-name">
+                      <b>{i.name}</b>
+                      <span>{formatMoney(i.basePrice)}</span>
+                    </span>
+                  </>
+                ),
+                className = 'pos-tile ' + (inBill ? 'in-bill' : '');
+              return i.modifierGroups?.length && i.isAvailable ? (
+                <Link className={className} href={'/menu/' + i.slug} key={i.id}>
+                  {body}
                 </Link>
-              ))}
+              ) : (
+                <button
+                  className={className}
+                  key={i.id}
+                  disabled={!i.isAvailable}
+                  aria-label={'Add ' + i.name}
+                  onClick={() =>
+                    add({
+                      key: i.id,
+                      menuItemId: i.id,
+                      name: i.name,
+                      price: Number(i.basePrice),
+                      imageUrl: i.imageUrl,
+                      quantity: 1,
+                      modifierOptionIds: [],
+                      modifierNames: [],
+                      specialInstructions: '',
+                    })
+                  }
+                >
+                  {body}
+                </button>
+              );
+            })}
+        </div>
+      </div>
+      <aside className="pos-bill">
+        <div className="segmented" role="group" aria-label="Order type">
+          {Object.entries(orderTypes)
+            .reverse()
+            .map(([value, label]) => (
+              <button
+                key={value}
+                className={type === value ? 'active' : ''}
+                aria-pressed={type === value}
+                onClick={() => setType(value)}
+              >
+                {label}
+              </button>
+            ))}
+        </div>
+        <div className="pos-bill-head">
+          <h2>Biilka</h2>
+          <span className="mono-label">{count} saxan</span>
+        </div>
+        <div className="pos-bill-lines">
+          {cart.map((l) => (
+            <div className="pos-bill-line" key={l.key}>
+              <span className="qty">
+                <button aria-label="Remove one" onClick={() => quantity(l.key, l.quantity - 1)}>
+                  −
+                </button>
+                {l.quantity}
+                <button aria-label="Add one" onClick={() => quantity(l.key, l.quantity + 1)}>
+                  +
+                </button>
+              </span>
+              <span>
+                {l.name}
+                {l.modifierNames.length > 0 && <small>{l.modifierNames.join(', ')}</small>}
+              </span>
+              <span className="mono">{formatMoney(l.price * l.quantity)}</span>
             </div>
           ))}
+          {!cart.length && <p className="pos-bill-empty">Dooro saxan si aad u bilowdo biil.</p>}
         </div>
-      ) : section === 'bills' ? (
-        <div className="panel">
-          <OrdersTable
-            orders={(orders || []).filter(
-              (o) => !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status),
-            )}
-          />
+        <div className="pos-bill-total">
+          <span>Wadarta hoose</span>
+          <strong>{formatMoney(subtotal)}</strong>
         </div>
-      ) : section === 'payments' ? (
-        <Payments />
-      ) : (
-        <Shifts />
-      )}
-    </>
-  );
-}
-function QuantitySmall({ value, onChange }: { value: number; onChange: (n: number) => void }) {
-  return (
-    <div className="quantity">
-      <button onClick={() => onChange(value - 1)} aria-label="Remove one">
-        −
-      </button>
-      <b>{value}</b>
-      <button onClick={() => onChange(value + 1)} aria-label="Add one">
-        +
-      </button>
+        <div className="pos-bill-actions">
+          <button disabled={!cart.length} onClick={clear}>
+            Nadiifi
+          </button>
+          <button className="primary" disabled={!cart.length} onClick={() => setCheckout(true)}>
+            Sii wad checkout
+          </button>
+        </div>
+      </aside>
     </div>
   );
 }
@@ -1930,117 +2066,182 @@ export function Delivery() {
     </>
   );
 }
+const riderState: Record<string, string> = {
+  READY: 'Diyaar',
+  OUT_FOR_DELIVERY: 'Jidka',
+  COMPLETED: 'La keenay',
+  CANCELLED: 'La joojiyey',
+  REJECTED: 'La diiday',
+};
 export function Rider({ section }: { section: string }) {
   const { data, error, refresh } = useData<any[]>('rider/orders', 5000),
-    { user, toast } = useStore();
-  async function move(o: any, status: string, proofNote?: string) {
+    { user, toast } = useStore(),
+    [openId, setOpenId] = useState(''),
+    [busy, setBusy] = useState(false);
+  async function run(action: () => Promise<unknown>) {
+    setBusy(true);
     try {
-      await api('rider/orders/' + o.id + '/status', {
-        method: 'PATCH',
-        body: JSON.stringify({ status, proofNote }),
-      });
+      await action();
       await refresh();
     } catch (e) {
       toast((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
-  return (
-    <>
-      <PageTitle
-        title={section === 'profile' ? user.name : 'Your next good delivery'}
-        description="Only assigned deliveries are visible to rider accounts."
-      />
-      <div className="tabs spaced">
-        <Link href="/rider">Assigned orders</Link>
-        <Link href="/rider/history">Delivery history</Link>
-        <Link href="/rider/profile">Profile</Link>
+  const move = (o: any, status: string, proofNote?: string) =>
+    api('rider/orders/' + o.id + '/status', {
+      method: 'PATCH',
+      body: JSON.stringify({ status, proofNote }),
+    });
+  const history = section === 'history',
+    rides = (data || []).filter(
+      (o) => ['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status) === history,
+    ),
+    open = section !== 'profile' && rides.find((o) => o.id === openId),
+    next = history ? undefined : rides.find((o) => o.status === 'OUT_FOR_DELIVERY') || rides[0];
+  if (open) {
+    const pickedUp = open.statusEvents?.find((e: any) => e.toStatus === 'OUT_FOR_DELIVERY'),
+      unpaid = open.paymentStatus !== 'PAID';
+    return (
+      <div className="rider rider-detail">
+        <button className="rider-back" onClick={() => setOpenId('')}>
+          ← Dalabyada
+        </button>
+        <div className="rider-detail-head">
+          <span className="mono-label">
+            {shortNumber(open.orderNumber)} ·{' '}
+            {pickedUp
+              ? `La qaaday ${clock(pickedUp.createdAt)}`
+              : riderState[open.status] || statusLabel[open.status] || open.status}
+          </span>
+          <h1>{open.guestName}</h1>
+          <p>{open.deliveryAddress}</p>
+        </div>
+        <div className="rider-stats">
+          <div>
+            <span className="mono-label">{unpaid ? 'Qaado cash' : 'La bixiyay'}</span>
+            <strong>{formatMoney(open.total)}</strong>
+          </div>
+          <div>
+            <span className="mono-label">Saxan</span>
+            <strong>{open.items.reduce((s: number, i: any) => s + i.quantity, 0)}</strong>
+          </div>
+        </div>
+        <ul className="rider-items">
+          {open.items.map((i: any) => (
+            <li key={i.id}>
+              {i.quantity}× {i.nameSnapshot}
+            </li>
+          ))}
+        </ul>
+        {open.status === 'READY' && (
+          <button
+            className="rider-primary"
+            disabled={busy}
+            onClick={() => void run(() => move(open, 'OUT_FOR_DELIVERY'))}
+          >
+            Xaqiiji qaadashada
+          </button>
+        )}
+        {open.status === 'OUT_FOR_DELIVERY' && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              const proofNote = String(new FormData(e.currentTarget).get('proofNote'));
+              void run(async () => {
+                if (unpaid)
+                  await api('payments/' + open.payments[0].id + '/capture', {
+                    method: 'POST',
+                    body: '{}',
+                  });
+                await move(open, 'COMPLETED', proofNote);
+                setOpenId('');
+              });
+            }}
+          >
+            <label className="rider-proof">
+              <span className="mono-label">Caddayn gaarsiin</span>
+              <textarea
+                name="proofNote"
+                placeholder="Qoraal: e.g. albaabka la siiyay…"
+                minLength={3}
+                maxLength={500}
+                required
+              />
+            </label>
+            <button className="rider-primary" disabled={busy}>
+              {unpaid ? 'La keenay · cash la qaaday' : 'La keenay'}
+            </button>
+          </form>
+        )}
+        <a className="rider-call" href={'tel:' + open.guestPhone.replace(/[^+\d]/g, '')}>
+          Wac macmiilka
+        </a>
       </div>
-      {error && <Notice error={error} />}{' '}
+    );
+  }
+  return (
+    <div className="rider">
+      <div className="rider-top">
+        <Wordmark />
+        <span className="mono-label">{user.name.split(' ')[0]} · Rider</span>
+      </div>
+      <h1>
+        {section === 'profile' ? (
+          user.name
+        ) : (
+          <>
+            {rides.length} dalab
+            <br />
+            {history ? 'la keenay.' : 'adiga.'}
+          </>
+        )}
+      </h1>
+      <nav className="pill-row">
+        {[
+          ['/rider', 'Loo qoondeeyay', 'assigned'],
+          ['/rider/history', 'Taariikh', 'history'],
+          ['/rider/profile', 'Profile', 'profile'],
+        ].map(([href, label, key]) => (
+          <Link key={href} href={href} className={'pill ' + (section === key ? 'active' : '')}>
+            {label}
+          </Link>
+        ))}
+      </nav>
+      {error && <Notice error={error} />}
       {section === 'profile' ? (
-        <div className="panel padded">
-          <h2>{user.name}</h2>
-          <p>Role: {user.role}</p>
+        <div className="rider-card">
+          <span className="mono-label">{user.role}</span>
           <p>Contact your manager to update your profile or delivery assignments.</p>
         </div>
       ) : (
-        <div className="rider-grid">
-          {data
-            ?.filter((o) =>
-              section === 'history'
-                ? ['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status)
-                : !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(o.status),
-            )
-            .map((o) => (
-              <div className="panel padded" key={o.id}>
-                <div className="section-heading">
-                  <h3>{o.orderNumber}</h3>
-                  <span className={'badge ' + o.status}>{o.status.replaceAll('_', ' ')}</span>
-                </div>
-                <h2>{o.guestName}</h2>
-                <p>{o.deliveryAddress}</p>
-                <p>
-                  <a className="text-link" href={'tel:' + o.guestPhone.replace(/[^+\d]/g, '')}>
-                    {o.guestPhone}
-                  </a>
-                </p>
-                <p>{o.items.map((i: any) => `${i.quantity} × ${i.nameSnapshot}`).join(', ')}</p>
-                <div className="summary-row">
-                  <span>Collect cash</span>
-                  <b>{o.paymentStatus === 'PAID' ? 'Paid' : formatMoney(o.total)}</b>
-                </div>
-                {o.status === 'READY' && (
-                  <button className="button full" onClick={() => void move(o, 'OUT_FOR_DELIVERY')}>
-                    Confirm pickup <Truck size={17} />
-                  </button>
-                )}
-                {o.status === 'OUT_FOR_DELIVERY' && (
-                  <>
-                    {o.paymentStatus !== 'PAID' && (
-                      <button
-                        className="button outline full"
-                        onClick={async () => {
-                          try {
-                            await api('payments/' + o.payments[0].id + '/capture', {
-                              method: 'POST',
-                              body: '{}',
-                            });
-                            await refresh();
-                          } catch (e) {
-                            toast((e as Error).message);
-                          }
-                        }}
-                      >
-                        Confirm cash received
-                      </button>
-                    )}
-                    <form
-                      onSubmit={(e) => {
-                        e.preventDefault();
-                        const f = new FormData(e.currentTarget);
-                        void move(o, 'COMPLETED', String(f.get('proofNote')));
-                      }}
-                    >
-                      <label className="field">
-                        Delivery confirmation note
-                        <input
-                          name="proofNote"
-                          placeholder="Handed to customer at front door"
-                          minLength={3}
-                          maxLength={500}
-                          required
-                        />
-                      </label>
-                      <button className="button full">
-                        Confirm delivered <Check size={17} />
-                      </button>
-                    </form>
-                  </>
-                )}
-              </div>
-            ))}
-        </div>
+        <>
+          {rides.map((o) => (
+            <button
+              className={'rider-card ' + (o === next ? 'is-next' : '')}
+              key={o.id}
+              onClick={() => setOpenId(o.id)}
+            >
+              <span className="rider-card-top">
+                <span title={o.orderNumber}>{shortNumber(o.orderNumber)}</span>
+                <span>{riderState[o.status] || 'Sugaya'}</span>
+              </span>
+              <b>{o.guestName}</b>
+              <span className="rider-card-bottom">
+                <span>{o.deliveryAddress}</span>
+                <b>{o.paymentStatus === 'PAID' ? 'La bixiyay' : formatMoney(o.total)}</b>
+              </span>
+            </button>
+          ))}
+          {data && !rides.length && (
+            <p className="muted">
+              {history ? 'Weli dalab lama keenin.' : 'Dalab laguu ma qoondeyn.'}
+            </p>
+          )}
+        </>
       )}
-    </>
+    </div>
   );
 }
 export function SettingsPage() {
