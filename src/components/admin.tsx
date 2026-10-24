@@ -19,6 +19,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import { api, useData, useStore } from './store';
+import { NewRiderDialog, RiderAssignment, DeliveryCompletion } from './delivery-controls';
 import { Brand, Checkout, Loading, Notice, statusLabel } from './customer';
 import { formatMoney, transitions } from '@/lib/domain';
 const groups: { title: string; items: [href: string, label: string, roles: string[]][] }[] = [
@@ -566,6 +567,16 @@ function OrderDetail({ order, refresh }: { order: any; refresh: () => Promise<vo
           </p>
           {order.deliveryAddress && <p>{order.deliveryAddress}</p>}
           {order.notes && <p className="note">{order.notes}</p>}
+          <RiderAssignment order={order} onUpdated={refresh} />
+          {order.type === 'DELIVERY' &&
+            ['OWNER', 'MANAGER'].includes(user.role) &&
+            ['READY', 'OUT_FOR_DELIVERY'].includes(order.status) && (
+              <DeliveryCompletion
+                order={order}
+                endpoint={'admin/orders/' + order.id + '/complete-delivery'}
+                onCompleted={refresh}
+              />
+            )}
           <h3>Next step</h3>
           {error && <Notice error={error} />}
           <div className="action-stack">
@@ -573,11 +584,19 @@ function OrderDetail({ order, refresh }: { order: any; refresh: () => Promise<vo
               .filter(
                 (s) =>
                   !(order.type !== 'DELIVERY' && s === 'OUT_FOR_DELIVERY') &&
-                  !(order.type === 'DELIVERY' && order.status === 'READY' && s === 'COMPLETED'),
+                  !(
+                    order.type === 'DELIVERY' &&
+                    s === 'COMPLETED' &&
+                    (order.status === 'READY' || ['OWNER', 'MANAGER'].includes(user.role))
+                  ),
               )
               .map((status) => (
                 <button
-                  disabled={busy || user.role === 'ACCOUNTANT'}
+                  disabled={
+                    busy ||
+                    user.role === 'ACCOUNTANT' ||
+                    (status === 'OUT_FOR_DELIVERY' && !order.delivery?.riderId)
+                  }
                   className={
                     'button ' + (['CANCELLED', 'REJECTED'].includes(status) ? 'outline danger' : '')
                   }
@@ -2017,14 +2036,35 @@ export function Purchases() {
 }
 export function Delivery() {
   const { data, error, refresh } = useData<any[]>('admin/deliveries', 7000),
-    { data: riders } = useData<any[]>('admin/delivery/riders'),
+    { data: riders, refresh: refreshRiders } = useData<any[]>('admin/delivery/riders'),
+    [adding, setAdding] = useState(false),
     { toast } = useStore();
   return (
     <>
       <PageTitle
         title="Good food, on the move"
         description="Assign the right rider and follow each delivery."
+        action={
+          <button className="button" onClick={() => setAdding(true)}>
+            <Plus size={16} />
+            Ku dar darawal
+          </button>
+        }
       />
+      {adding && (
+        <NewRiderDialog
+          onClose={() => setAdding(false)}
+          onCreated={async () => {
+            await refreshRiders();
+            setAdding(false);
+            toast('Darawalka waa la kaydiyey');
+          }}
+        />
+      )}
+      <div className="panel padded">
+        <h2>Darawallada</h2>
+        <DataTable rows={riders || []} columns={['fullName', 'email', 'phone']} />
+      </div>
       {error && <Notice error={error} />}
       <div className="panel">
         <DataTable
@@ -2036,33 +2076,38 @@ export function Delivery() {
             rider: d.rider?.fullName || 'Unassigned',
           }))}
           columns={['orderNumber', 'customer', 'address', 'status', 'rider']}
-          actions={(d) =>
-            ['PENDING', 'ASSIGNED'].includes(d.status) && (
-              <select
-                aria-label="Assign rider"
-                value={d.riderId || ''}
-                onChange={async (e) => {
-                  try {
-                    await api('admin/deliveries/' + d.id, {
-                      method: 'PATCH',
-                      body: JSON.stringify({ riderId: e.target.value }),
-                    });
-                    await refresh();
-                    toast('Rider assigned');
-                  } catch (e) {
-                    toast((e as Error).message);
-                  }
-                }}
-              >
-                <option value="">Assign rider…</option>
-                {riders?.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.fullName}
-                  </option>
-                ))}
-              </select>
-            )
-          }
+          actions={(d) => (
+            <>
+              <Link className="small-button" href={'/admin/orders/' + d.orderId}>
+                Fur dalabka
+              </Link>
+              {['PENDING', 'ASSIGNED'].includes(d.status) && (
+                <select
+                  aria-label="Assign rider"
+                  value={d.riderId || ''}
+                  onChange={async (e) => {
+                    try {
+                      await api('admin/deliveries/' + d.id, {
+                        method: 'PATCH',
+                        body: JSON.stringify({ riderId: e.target.value }),
+                      });
+                      await refresh();
+                      toast('Rider assigned');
+                    } catch (e) {
+                      toast((e as Error).message);
+                    }
+                  }}
+                >
+                  <option value="">Assign rider…</option>
+                  {riders?.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.fullName}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </>
+          )}
         />
       </div>
     </>
@@ -2104,7 +2149,10 @@ export function Rider({ section }: { section: string }) {
     next = history ? undefined : rides.find((o) => o.status === 'OUT_FOR_DELIVERY') || rides[0];
   if (open) {
     const pickedUp = open.statusEvents?.find((e: any) => e.toStatus === 'OUT_FOR_DELIVERY'),
-      unpaid = open.paymentStatus !== 'PAID';
+      unpaid = open.paymentStatus !== 'PAID',
+      remaining = open.payments
+        .filter((payment: any) => ['PENDING', 'UNPAID'].includes(payment.status))
+        .reduce((sum: number, payment: any) => sum + Number(payment.amount), 0);
     return (
       <div className="rider rider-detail">
         <button className="rider-back" onClick={() => setOpenId('')}>
@@ -2123,7 +2171,7 @@ export function Rider({ section }: { section: string }) {
         <div className="rider-stats">
           <div>
             <span className="mono-label">{unpaid ? 'Qaado cash' : 'La bixiyay'}</span>
-            <strong>{formatMoney(open.total)}</strong>
+            <strong>{formatMoney(unpaid ? remaining : open.total)}</strong>
           </div>
           <div>
             <span className="mono-label">Saxan</span>
@@ -2147,35 +2195,14 @@ export function Rider({ section }: { section: string }) {
           </button>
         )}
         {open.status === 'OUT_FOR_DELIVERY' && (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const proofNote = String(new FormData(e.currentTarget).get('proofNote'));
-              void run(async () => {
-                if (unpaid)
-                  await api('payments/' + open.payments[0].id + '/capture', {
-                    method: 'POST',
-                    body: '{}',
-                  });
-                await move(open, 'COMPLETED', proofNote);
-                setOpenId('');
-              });
+          <DeliveryCompletion
+            order={open}
+            endpoint={'rider/orders/' + open.id + '/complete-delivery'}
+            onCompleted={async () => {
+              await refresh();
+              setOpenId('');
             }}
-          >
-            <label className="rider-proof">
-              <span className="mono-label">Caddayn gaarsiin</span>
-              <textarea
-                name="proofNote"
-                placeholder="Qoraal: e.g. albaabka la siiyay…"
-                minLength={3}
-                maxLength={500}
-                required
-              />
-            </label>
-            <button className="rider-primary" disabled={busy}>
-              {unpaid ? 'La keenay · cash la qaaday' : 'La keenay'}
-            </button>
-          </form>
+          />
         )}
         <a className="rider-call" href={'tel:' + open.guestPhone.replace(/[^+\d]/g, '')}>
           Wac macmiilka
@@ -2232,7 +2259,15 @@ export function Rider({ section }: { section: string }) {
               <b>{o.guestName}</b>
               <span className="rider-card-bottom">
                 <span>{o.deliveryAddress}</span>
-                <b>{o.paymentStatus === 'PAID' ? 'La bixiyay' : formatMoney(o.total)}</b>
+                <b>
+                  {o.paymentStatus === 'PAID'
+                    ? 'La bixiyay'
+                    : formatMoney(
+                        o.payments
+                          .filter((payment: any) => ['PENDING', 'UNPAID'].includes(payment.status))
+                          .reduce((sum: number, payment: any) => sum + Number(payment.amount), 0),
+                      )}
+                </b>
               </span>
             </button>
           ))}

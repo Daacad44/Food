@@ -215,3 +215,108 @@ test('delivery tracking updates from order received to dispatched and delivered'
   await expect(page.getByText('Private Tracking Guest')).toHaveCount(0);
   await expect(page.getByText('Private test address')).toHaveCount(0);
 });
+
+async function deliveryReady(page: import('@playwright/test').Page, guestName: string) {
+  const login = await page.request.post('/api/v1/auth/staff/login', {
+    data: { email: 'test-owner@botan.local', password: 'IntegrationTest!Password26' },
+  });
+  expect(login.ok()).toBe(true);
+  const menu = await (await page.request.get('/api/v1/menu/items')).json(),
+    zones = await (await page.request.get('/api/v1/delivery/zones')).json();
+  const created = await page.request.post('/api/v1/orders', {
+    headers: { 'Idempotency-Key': crypto.randomUUID() },
+    data: {
+      items: [
+        {
+          menuItemId: menu.find((item: any) => item.slug === 'chicken-suqaar').id,
+          quantity: 1,
+          modifierOptionIds: [],
+          specialInstructions: '',
+        },
+      ],
+      type: 'DELIVERY',
+      guestName,
+      guestPhone: '+252610005555',
+      zoneId: zones[0].id,
+      deliveryAddress: 'Test driver delivery address',
+    },
+  });
+  expect(created.ok()).toBe(true);
+  const order = await created.json();
+  for (const status of ['CONFIRMED', 'PREPARING', 'READY'])
+    expect(
+      (
+        await page.request.patch('/api/v1/admin/orders/' + order.id + '/status', {
+          data: { status },
+        })
+      ).ok(),
+    ).toBe(true);
+  return order;
+}
+
+test('admin creates and assigns a driver on the order, then that driver completes delivery', async ({
+  page,
+  browser,
+  baseURL,
+  isMobile,
+}) => {
+  const guestName = 'Driver flow ' + crypto.randomUUID().slice(0, 8),
+    order = await deliveryReady(page, guestName);
+  await page.goto('/admin/orders/' + order.id);
+  const dispatch = page.getByRole('button', { name: 'Waddada ku jira', exact: true });
+  await expect(dispatch).toBeDisabled();
+  await page.getByRole('button', { name: 'Ku dar darawal', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Ku dar darawal' }),
+    email = 'rider-' + crypto.randomUUID() + '@example.test',
+    password = 'BrowserRider!Password26';
+  await dialog.getByLabel('Magaca darawalka', { exact: true }).fill('Browser Delivery Driver');
+  await dialog.getByLabel('Email-ka darawalka', { exact: true }).fill(email);
+  await dialog.getByLabel('Telefoonka darawalka', { exact: true }).fill('+252610006666');
+  await dialog.getByLabel('Password-ka darawalka', { exact: true }).fill(password);
+  await dialog.getByRole('button', { name: 'Kaydi darawalka', exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  await page.getByRole('button', { name: 'U qoondee darawal', exact: true }).click();
+  await expect(dispatch).toBeEnabled();
+  const context = await browser.newContext({ baseURL, viewport: page.viewportSize()!, isMobile });
+  try {
+    expect(
+      (await context.request.post('/api/v1/auth/staff/login', { data: { email, password } })).ok(),
+    ).toBe(true);
+    const driver = await context.newPage();
+    await driver.goto('/rider');
+    await driver.locator('button.rider-card').filter({ hasText: guestName }).click();
+    await driver.getByRole('button', { name: 'Xaqiiji qaadashada', exact: true }).click();
+    await driver
+      .getByLabel('Caddaynta gaarsiinta', { exact: true })
+      .fill('Delivered directly to customer by the assigned driver.');
+    await driver.getByRole('checkbox', { name: /cash la qaaday/ }).check();
+    await driver.getByRole('button', { name: 'Xaqiiji in la geeyey', exact: true }).click();
+    await expect(driver.getByRole('status')).toContainText('Gaarsiinta waa la dhammeeyey');
+    await driver.goto('/rider/history');
+    await expect(driver.locator('button.rider-card').filter({ hasText: guestName })).toBeVisible();
+    const details = await (await page.request.get('/api/v1/admin/orders/' + order.id)).json();
+    expect(details.status).toBe('COMPLETED');
+    expect(details.paymentStatus).toBe('PAID');
+    expect(details.delivery.status).toBe('DELIVERED');
+  } finally {
+    await context.close();
+  }
+});
+
+test('admin confirms delivered and cash collected without requiring an onboarded driver', async ({
+  page,
+}) => {
+  const order = await deliveryReady(page, 'Admin completion ' + crypto.randomUUID().slice(0, 8));
+  await page.goto('/admin/orders/' + order.id);
+  await page
+    .getByLabel('Caddaynta gaarsiinta', { exact: true })
+    .fill('Manager verified delivery with the customer.');
+  await page.getByRole('checkbox', { name: /cash la qaaday/ }).check();
+  await page.getByRole('button', { name: 'Xaqiiji in la geeyey', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Gaarsiinta waa la dhammeeyey');
+  const details = await (await page.request.get('/api/v1/admin/orders/' + order.id)).json();
+  expect(details.status).toBe('COMPLETED');
+  expect(details.paymentStatus).toBe('PAID');
+  expect(details.delivery.riderId).toBeNull();
+  expect(details.delivery.proofNote).toContain('Manager verified');
+});
