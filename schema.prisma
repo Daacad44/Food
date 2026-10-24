@@ -411,6 +411,10 @@ model Order {
   requestHash       String
   stockDeducted     Boolean            @default(false)
   trackingTokenHash String             @unique
+  /// WHATSAPP for orders taken by the DaljirConnect AI; null for website / POS orders
+  channel           String?
+  /// the order's id in DaljirConnect — status, payment and the POS number are pushed back to it
+  externalRef       String?            @unique
   confirmedAt       DateTime?
   completedAt       DateTime?
   cancelledAt       DateTime?
@@ -706,9 +710,11 @@ model OutboxEvent {
   attempts     Int       @default(0)
   availableAt  DateTime  @default(now())
   processedAt  DateTime?
+  lastError    String?
   createdAt    DateTime  @default(now())
 
   @@index([status, availableAt])
+  @@index([topic, status])
 }
 
 model RateLimit {
