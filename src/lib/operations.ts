@@ -32,45 +32,50 @@ async function syncPaymentStatus(tx: Prisma.TransactionClient, orderId: string) 
     await queueOrderSync(tx, order.restaurantId, order.externalRef);
 }
 export async function capturePayment(id: string, user: Actor, amount?: number) {
-  return transaction(async (tx) => {
-    const p = await tx.payment.findUnique({
-      where: { id },
-      include: { order: { include: { delivery: true } } },
-    });
-    ensure(p && p.order.restaurantId === user.restaurantId, 'Payment not found', 404);
-    if (user.role === 'RIDER')
-      ensure(p.order.delivery?.riderId === user.id, 'Payment access denied', 403);
-    if (p.status === 'PAID') return p;
-    ensure(
-      ['PENDING', 'UNPAID'].includes(p.status) &&
-        !['CANCELLED', 'REJECTED'].includes(p.order.status),
-      'Payment cannot be captured',
-      409,
-    );
-    const shift = await tx.cashierShift.findFirst({
-      where: { cashierId: user.id, status: 'OPEN' },
-    });
-    if (user.role === 'CASHIER') ensure(shift, 'Open your cashier shift first', 409);
-    const cents = amount === undefined ? money(p.amount) : money(amount);
-    ensure(Number.isFinite(cents) && cents > 0 && cents <= money(p.amount), 'Invalid cash amount');
-    const result = await tx.payment.update({
-      where: { id },
-      data: { amount: decimal(cents), status: 'PAID', paidAt: new Date(), shiftId: shift?.id },
-    });
-    if (cents < money(p.amount))
-      await tx.payment.create({
-        data: {
-          orderId: p.orderId,
-          amount: decimal(money(p.amount) - cents),
-          method: 'CASH',
-          status: 'PENDING',
-          idempotencyKey: `remainder:${p.id}`,
-        },
-      });
-    await syncPaymentStatus(tx, p.orderId);
-    await audit(tx, user, 'CASH_CAPTURE', 'Payment', id, { amount: String(p.amount) });
-    return result;
+  return transaction((tx) => capturePaymentInTransaction(tx, id, user, amount));
+}
+export async function capturePaymentInTransaction(
+  tx: Prisma.TransactionClient,
+  id: string,
+  user: Actor,
+  amount?: number,
+) {
+  const p = await tx.payment.findUnique({
+    where: { id },
+    include: { order: { include: { delivery: true } } },
   });
+  ensure(p && p.order.restaurantId === user.restaurantId, 'Payment not found', 404);
+  if (user.role === 'RIDER')
+    ensure(p.order.delivery?.riderId === user.id, 'Payment access denied', 403);
+  if (p.status === 'PAID') return p;
+  ensure(
+    ['PENDING', 'UNPAID'].includes(p.status) && !['CANCELLED', 'REJECTED'].includes(p.order.status),
+    'Payment cannot be captured',
+    409,
+  );
+  const shift = await tx.cashierShift.findFirst({
+    where: { cashierId: user.id, status: 'OPEN' },
+  });
+  if (user.role === 'CASHIER') ensure(shift, 'Open your cashier shift first', 409);
+  const cents = amount === undefined ? money(p.amount) : money(amount);
+  ensure(Number.isFinite(cents) && cents > 0 && cents <= money(p.amount), 'Invalid cash amount');
+  const result = await tx.payment.update({
+    where: { id },
+    data: { amount: decimal(cents), status: 'PAID', paidAt: new Date(), shiftId: shift?.id },
+  });
+  if (cents < money(p.amount))
+    await tx.payment.create({
+      data: {
+        orderId: p.orderId,
+        amount: decimal(money(p.amount) - cents),
+        method: 'CASH',
+        status: 'PENDING',
+        idempotencyKey: `remainder:${p.id}`,
+      },
+    });
+  await syncPaymentStatus(tx, p.orderId);
+  await audit(tx, user, 'CASH_CAPTURE', 'Payment', id, { amount: String(result.amount) });
+  return result;
 }
 export async function refundPayment(id: string, body: unknown, key: string, user: Actor) {
   const data = z

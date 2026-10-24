@@ -330,81 +330,89 @@ export async function transitionOrder(
   user: Actor,
   proofNote?: string,
 ) {
-  return transaction(async (tx) => {
-    const o = await tx.order.findUnique({
-      where: { id },
-      include: { items: true, delivery: true },
-    });
-    ensure(o && o.restaurantId === user.restaurantId, 'Order not found', 404);
-    ensure(canTransition(o.status, to, o.type), 'Invalid order status transition', 409);
-    if (user.role === 'CHEF')
-      ensure(
-        (o.status === 'CONFIRMED' && to === 'PREPARING') ||
-          (o.status === 'PREPARING' && to === 'READY'),
-        'Kitchen transition denied',
-        403,
-      );
+  return transaction((tx) => transitionOrderInTransaction(tx, id, to, user, proofNote));
+}
+export async function transitionOrderInTransaction(
+  tx: Tx,
+  id: string,
+  to: OrderStatus,
+  user: Actor,
+  proofNote?: string,
+) {
+  const o = await tx.order.findUnique({
+    where: { id },
+    include: { items: true, delivery: true },
+  });
+  ensure(o && o.restaurantId === user.restaurantId, 'Order not found', 404);
+  const manualCompletion =
+    ['OWNER', 'MANAGER'].includes(user.role) &&
+    o.type === 'DELIVERY' &&
+    o.status === 'READY' &&
+    to === 'COMPLETED';
+  ensure(
+    canTransition(o.status, to, o.type) || manualCompletion,
+    'Invalid order status transition',
+    409,
+  );
+  if (user.role === 'CHEF')
+    ensure(
+      (o.status === 'CONFIRMED' && to === 'PREPARING') ||
+        (o.status === 'PREPARING' && to === 'READY'),
+      'Kitchen transition denied',
+      403,
+    );
+  if (user.role === 'RIDER')
+    ensure(
+      o.delivery?.riderId === user.id &&
+        ((o.status === 'READY' && to === 'OUT_FOR_DELIVERY') ||
+          (o.status === 'OUT_FOR_DELIVERY' && to === 'COMPLETED')),
+      'Delivery transition denied',
+      403,
+    );
+  if (to === 'OUT_FOR_DELIVERY') {
+    ensure(o.delivery?.riderId, 'Assign a rider first');
+    ensure(
+      await tx.staffUser.findFirst({
+        where: {
+          id: o.delivery.riderId,
+          restaurantId: user.restaurantId,
+          role: 'RIDER',
+          status: 'ACTIVE',
+        },
+      }),
+      'Assigned rider is inactive. Assign an active rider first.',
+      409,
+    );
+  }
+  if (to === 'COMPLETED') {
+    ensure(o.paymentStatus === 'PAID', 'Collect payment before completing the order', 409);
     if (user.role === 'RIDER')
-      ensure(
-        o.delivery?.riderId === user.id &&
-          ((o.status === 'READY' && to === 'OUT_FOR_DELIVERY') ||
-            (o.status === 'OUT_FOR_DELIVERY' && to === 'COMPLETED')),
-        'Delivery transition denied',
-        403,
-      );
-    if (to === 'OUT_FOR_DELIVERY') ensure(o.delivery?.riderId, 'Assign a rider first');
-    if (to === 'COMPLETED') {
-      ensure(o.paymentStatus === 'PAID', 'Collect payment before completing the order', 409);
-      if (user.role === 'RIDER')
-        ensure(proofNote && proofNote.trim().length >= 3, 'Delivery confirmation note required');
-    }
-    if (to === 'CONFIRMED' && !o.stockDeducted) {
-      for (const item of o.items) {
-        if (!item.menuItemId) continue;
-        const recipes = await tx.recipeIngredient.findMany({
-          where: { menuItemId: item.menuItemId },
-          include: { inventoryItem: true },
-        });
-        for (const recipe of recipes) {
-          const quantity = Number(recipe.quantity) * item.quantity;
-          const updated = await tx.inventoryItem.updateMany({
-            where: {
-              id: recipe.inventoryItemId,
-              isActive: true,
-              quantityOnHand: { gte: quantity },
-            },
-            data: { quantityOnHand: { decrement: quantity } },
-          });
-          ensure(updated.count === 1, 'Insufficient inventory', 409);
-          await tx.inventoryMovement.create({
-            data: {
-              inventoryItemId: recipe.inventoryItemId,
-              type: 'CONSUMPTION',
-              unitCost: recipe.inventoryItem.averageUnitCost,
-              quantityDelta: -quantity,
-              referenceType: 'ORDER',
-              referenceId: id,
-              actorId: user.id,
-            },
-          });
-        }
-      }
-    }
-    if ((to === 'CANCELLED' || to === 'REJECTED') && o.stockDeducted) {
-      const movements = await tx.inventoryMovement.findMany({
-        where: { referenceId: id, referenceType: 'ORDER', type: 'CONSUMPTION' },
+      ensure(proofNote && proofNote.trim().length >= 3, 'Delivery confirmation note required');
+  }
+  if (to === 'CONFIRMED' && !o.stockDeducted) {
+    for (const item of o.items) {
+      if (!item.menuItemId) continue;
+      const recipes = await tx.recipeIngredient.findMany({
+        where: { menuItemId: item.menuItemId },
+        include: { inventoryItem: true },
       });
-      for (const m of movements) {
-        await tx.inventoryItem.update({
-          where: { id: m.inventoryItemId },
-          data: { quantityOnHand: { increment: Math.abs(Number(m.quantityDelta)) } },
+      for (const recipe of recipes) {
+        const quantity = Number(recipe.quantity) * item.quantity;
+        const updated = await tx.inventoryItem.updateMany({
+          where: {
+            id: recipe.inventoryItemId,
+            isActive: true,
+            quantityOnHand: { gte: quantity },
+          },
+          data: { quantityOnHand: { decrement: quantity } },
         });
+        ensure(updated.count === 1, 'Insufficient inventory', 409);
         await tx.inventoryMovement.create({
           data: {
-            inventoryItemId: m.inventoryItemId,
-            type: 'RETURN',
-            unitCost: m.unitCost,
-            quantityDelta: Math.abs(Number(m.quantityDelta)),
+            inventoryItemId: recipe.inventoryItemId,
+            type: 'CONSUMPTION',
+            unitCost: recipe.inventoryItem.averageUnitCost,
+            quantityDelta: -quantity,
             referenceType: 'ORDER',
             referenceId: id,
             actorId: user.id,
@@ -412,49 +420,71 @@ export async function transitionOrder(
         });
       }
     }
-    if ((to === 'CANCELLED' || to === 'REJECTED') && o.couponId)
-      await tx.coupon.update({ where: { id: o.couponId }, data: { usedCount: { decrement: 1 } } });
-    const updated = await tx.order.update({
-      where: { id },
-      data: {
-        status: to,
-        ...(to === 'CONFIRMED' ? { stockDeducted: true, confirmedAt: new Date() } : {}),
-        ...(['CANCELLED', 'REJECTED'].includes(to)
-          ? { stockDeducted: false, cancelledAt: new Date() }
-          : {}),
-        ...(to === 'COMPLETED' ? { completedAt: new Date() } : {}),
-        statusEvents: { create: { fromStatus: o.status, toStatus: to, actorId: user.id } },
-      },
+  }
+  if ((to === 'CANCELLED' || to === 'REJECTED') && o.stockDeducted) {
+    const movements = await tx.inventoryMovement.findMany({
+      where: { referenceId: id, referenceType: 'ORDER', type: 'CONSUMPTION' },
     });
-    if (o.tableId && ['COMPLETED', 'CANCELLED', 'REJECTED'].includes(to)) {
-      const active = await tx.order.count({
-        where: { tableId: o.tableId, status: { notIn: ['COMPLETED', 'CANCELLED', 'REJECTED'] } },
+    for (const m of movements) {
+      await tx.inventoryItem.update({
+        where: { id: m.inventoryItemId },
+        data: { quantityOnHand: { increment: Math.abs(Number(m.quantityDelta)) } },
       });
-      if (!active)
-        await tx.diningTable.update({ where: { id: o.tableId }, data: { status: 'AVAILABLE' } });
-    }
-    if (o.delivery && to === 'OUT_FOR_DELIVERY')
-      await tx.delivery.update({
-        where: { id: o.delivery.id },
-        data: { status: 'IN_TRANSIT', pickedUpAt: new Date() },
-      });
-    if (o.delivery && to === 'COMPLETED')
-      await tx.delivery.update({
-        where: { id: o.delivery.id },
+      await tx.inventoryMovement.create({
         data: {
-          status: 'DELIVERED',
-          deliveredAt: new Date(),
-          proofNote: proofNote || 'Staff confirmed delivery',
+          inventoryItemId: m.inventoryItemId,
+          type: 'RETURN',
+          unitCost: m.unitCost,
+          quantityDelta: Math.abs(Number(m.quantityDelta)),
+          referenceType: 'ORDER',
+          referenceId: id,
+          actorId: user.id,
         },
       });
-    if (o.delivery && to === 'CANCELLED')
-      await tx.delivery.update({ where: { id: o.delivery.id }, data: { status: 'RETURNED' } });
-    await audit(tx, user, 'ORDER_STATUS', 'Order', id, { from: o.status, to });
-    await event(tx, o.restaurantId, 'order.status', { orderId: id, status: to });
-    // WhatsApp orders: the customer hears about every step from DaljirConnect.
-    if (o.externalRef) await queueOrderSync(tx, o.restaurantId, o.externalRef);
-    return updated;
+    }
+  }
+  if ((to === 'CANCELLED' || to === 'REJECTED') && o.couponId)
+    await tx.coupon.update({ where: { id: o.couponId }, data: { usedCount: { decrement: 1 } } });
+  const updated = await tx.order.update({
+    where: { id },
+    data: {
+      status: to,
+      ...(to === 'CONFIRMED' ? { stockDeducted: true, confirmedAt: new Date() } : {}),
+      ...(['CANCELLED', 'REJECTED'].includes(to)
+        ? { stockDeducted: false, cancelledAt: new Date() }
+        : {}),
+      ...(to === 'COMPLETED' ? { completedAt: new Date() } : {}),
+      statusEvents: { create: { fromStatus: o.status, toStatus: to, actorId: user.id } },
+    },
   });
+  if (o.tableId && ['COMPLETED', 'CANCELLED', 'REJECTED'].includes(to)) {
+    const active = await tx.order.count({
+      where: { tableId: o.tableId, status: { notIn: ['COMPLETED', 'CANCELLED', 'REJECTED'] } },
+    });
+    if (!active)
+      await tx.diningTable.update({ where: { id: o.tableId }, data: { status: 'AVAILABLE' } });
+  }
+  if (o.delivery && to === 'OUT_FOR_DELIVERY')
+    await tx.delivery.update({
+      where: { id: o.delivery.id },
+      data: { status: 'IN_TRANSIT', pickedUpAt: new Date() },
+    });
+  if (o.delivery && to === 'COMPLETED')
+    await tx.delivery.update({
+      where: { id: o.delivery.id },
+      data: {
+        status: 'DELIVERED',
+        deliveredAt: new Date(),
+        proofNote: proofNote || 'Staff confirmed delivery',
+      },
+    });
+  if (o.delivery && to === 'CANCELLED')
+    await tx.delivery.update({ where: { id: o.delivery.id }, data: { status: 'RETURNED' } });
+  await audit(tx, user, 'ORDER_STATUS', 'Order', id, { from: o.status, to });
+  await event(tx, o.restaurantId, 'order.status', { orderId: id, status: to });
+  // WhatsApp orders: the customer hears about every step from DaljirConnect.
+  if (o.externalRef) await queueOrderSync(tx, o.restaurantId, o.externalRef);
+  return updated;
 }
 export const orderInclude = {
   items: { include: { modifiers: true } },
