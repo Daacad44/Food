@@ -62,6 +62,16 @@ This implementation adapts the original blueprint to **Vercel + Supabase Postgre
 
 The server owns all order price calculations. `Idempotency-Key` prevents duplicate orders and refunds. The reviewed checkout total is checked again before placing an order. Order state and payment state remain separate.
 
+## Driver assignment and delivery completion
+
+Owners and managers can add drivers from **Delivery → Ku dar darawal**, or directly inside a delivery order's **Darawalka** section. The dedicated create-driver endpoint always creates an active `RIDER` account; it cannot grant another role. Set a name, email and a 12+ character password, then select that driver and click **U qoondee darawal** on the order. Dispatch is disabled until a driver is assigned; suspended drivers cannot be dispatched.
+
+Drivers sign in using **Staff login** and open `/rider`. They can pick up only their assigned ready orders and confirm delivery with a proof note. Cash must be explicitly confirmed; only the outstanding balance of split tenders is captured. The cash captures, payment status, delivery completion, audit records and integration outbox changes commit in one transaction. Retrying completion does not collect money again.
+
+An owner or manager may also use **Dhammee gaarsiinta → Xaqiiji in la geeyey** on a ready or dispatched delivery order, even when no app driver was assigned. This records an explicit admin confirmation instead of requiring a fictitious driver/pickup. It still requires a delivery note and either a settled payment or confirmed cash collection. Refunded orders and unsettled non-cash payments cannot be completed this way. Cashiers and kitchen staff cannot use this override.
+
+Driver assignment is locked after dispatch and terminal order states. To review the actor, amount and completion note, use the existing audit log and order history. No additional database migration is required for this workflow.
+
 ## Test
 
 Start the local database first.
