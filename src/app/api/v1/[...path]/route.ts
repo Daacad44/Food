@@ -49,7 +49,7 @@ import {
   scheduleDrain,
   syncMenuNow,
 } from '@/lib/daljirconnect';
-import { queueMenuSync } from '@/lib/daljir-queue';
+import { queueMenuSync, queueOrderSync } from '@/lib/daljir-queue';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 type Context = { params: Promise<{ path: string[] }> };
@@ -785,8 +785,12 @@ async function handle(request: Request, context: Context) {
           const result = await tx.delivery.update({
             where: { id: p[2] },
             data: { riderId: d.riderId, status: 'ASSIGNED', assignedAt: new Date() },
+            include: { order: { select: { externalRef: true, channel: true } } },
           });
           await audit(tx, u, 'ASSIGN_RIDER', 'Delivery', p[2]);
+          // A WhatsApp order: the customer gets the rider's name and phone.
+          if (result.order.channel === 'WHATSAPP' && result.order.externalRef)
+            await queueOrderSync(tx, u.restaurantId, result.order.externalRef);
           return result;
         }),
       );

@@ -4,9 +4,11 @@ import { z } from 'zod';
 import { db } from './db';
 import { AppError } from './errors';
 import {
+  DALJIR_DRIVERS,
   DALJIR_MENU,
   DALJIR_ORDER,
   daljirConfig,
+  queueDriversSync,
   queueMenuSync,
   queueOrderSync,
 } from './daljir-queue';
@@ -18,7 +20,10 @@ import type { Actor } from './security';
 //  • DaljirConnect → Botan: a signed webhook per order; the order is created here as PENDING_APPROVAL, like a website
 //    order, and from then on Botan is the master — the kitchen, riders and cashiers work it as usual.
 //  • Botan → DaljirConnect: every status change, payment and the order number is pushed back (the customer is told on
-//    WhatsApp), and the menu (names, prices, sold-out) is synced by SKU = MenuItem.id.
+//    WhatsApp), and the menu (names, prices, sold-out) is synced by SKU = MenuItem.id. Riders are synced the same way
+//    (id, name, phone); assigning one to a delivery sends the customer the rider's name and phone.
+//  • An order placed in chat for someone else arrives with a recipient: they are the guest here (name, phone,
+//    address); the notes say who ordered it and pays.
 // Pushes go through the outbox (daljir.* topics) and are sent by drainDaljir(): right after the request, whenever a
 // staff board polls, and by the cron as a fallback.
 
@@ -45,7 +50,13 @@ export class PermanentError extends Error {}
 
 // ─── HTTP to DaljirConnect ─────────────────────────────────────────────────
 
-type DcOrder = { id: string; status: string; paymentStatus: string; externalId: string | null };
+type DcOrder = {
+  id: string;
+  status: string;
+  paymentStatus: string;
+  externalId: string | null;
+  driver?: { name: string; phone: string } | null;
+};
 
 async function dc<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
   const { url, apiKey } = daljirConfig();
@@ -109,6 +120,11 @@ const webhookOrder = z.object({
   address: z.string().nullable().optional(),
   tableNumber: z.string().nullable().optional(),
   notes: z.string().nullable().optional(),
+  /** ordered for someone else: they receive it, the contact pays */
+  recipient: z
+    .object({ name: z.string(), phone: z.string().nullable().optional() })
+    .nullable()
+    .optional(),
 });
 type WebhookOrder = z.infer<typeof webhookOrder>;
 const webhookBody = z.object({
@@ -174,14 +190,24 @@ async function importOrder(o: WebhookOrder) {
       specialInstructions: (i.notes ?? '').slice(0, 300),
     };
   });
-  const phone = o.contact?.phone?.trim() ?? '';
+  const payerPhone = o.contact?.phone?.trim() ?? '';
+  const rawName = o.contact?.name?.trim() ?? '';
+  const payerName =
+    rawName.length >= 2 && rawName !== payerPhone ? rawName.slice(0, 100) : 'WhatsApp customer';
+  // For someone else: the rider calls and hands it to the recipient; the one who ordered pays.
+  const gift = o.recipient?.phone
+    ? { name: o.recipient.name.trim(), phone: o.recipient.phone.trim() }
+    : null;
+  const phone = gift?.phone ?? payerPhone;
   if (!/^\+?[\d\s-]{7,20}$/.test(phone))
     throw new AppError(422, 'The customer has no phone number');
-  const rawName = o.contact?.name?.trim() ?? '';
-  const guestName =
-    rawName.length >= 2 && rawName !== phone ? rawName.slice(0, 100) : 'WhatsApp customer';
+  const guestName = gift && gift.name.length >= 2 ? gift.name.slice(0, 100) : payerName;
 
   const notes = [`WhatsApp #${o.number}`];
+  if (gift)
+    notes.push(
+      `🎁 Loo dalbay ${guestName} — waxaa dalbaday oo bixinaya ${payerName}${payerPhone ? ` (${payerPhone})` : ''}`,
+    );
   let zoneId: string | undefined;
   let deliveryAddress: string | undefined;
   if (type === 'DELIVERY') {
@@ -258,7 +284,12 @@ async function importOrder(o: WebhookOrder) {
 export async function syncOrder(dcOrderId: string, cancelReason?: string) {
   const ref = `id:${encodeURIComponent(dcOrderId)}`;
   const remote = await dc<DcOrder>(`/order/${ref}`);
-  const local = await db.order.findUnique({ where: { externalRef: dcOrderId } });
+  const local = await db.order.findUnique({
+    where: { externalRef: dcOrderId },
+    include: {
+      delivery: { include: { rider: { select: { id: true, fullName: true, phone: true } } } },
+    },
+  });
   if (!local) {
     // Never created here (rejected): cancel it there so the customer is told.
     if (cancelReason && !DC_TERMINAL.includes(remote.status))
@@ -268,7 +299,14 @@ export async function syncOrder(dcOrderId: string, cancelReason?: string) {
       });
     return;
   }
-  const patch: Record<string, string> = {};
+  const patch: Record<string, unknown> = {};
+  // The rider assigned here: the customer gets the name and phone (riders without a phone can't be sent).
+  const rider = local.delivery?.rider;
+  if (
+    rider?.phone &&
+    (remote.driver?.name !== rider.fullName || remote.driver?.phone !== driverPhone(rider.phone))
+  )
+    patch.driver = { id: rider.id, name: rider.fullName, phone: rider.phone };
   if (remote.externalId !== local.orderNumber) patch.externalId = local.orderNumber;
   const paid =
     local.paymentStatus === 'PAID'
@@ -293,6 +331,37 @@ export async function syncOrder(dcOrderId: string, cancelReason?: string) {
         ? { reason: local.status === 'REJECTED' ? REJECTED_REASON : undefined }
         : {}),
     },
+  });
+}
+
+/** DaljirConnect stores phones as +252…: compare the same way so an unchanged rider isn't sent again. */
+function driverPhone(raw: string) {
+  const digits = raw.replace(/[^\d+]/g, '');
+  if (digits.startsWith('+')) return digits;
+  if (digits.startsWith('00')) return `+${digits.slice(2)}`;
+  if (digits.startsWith('252')) return `+${digits}`;
+  return `+252${digits.replace(/^0+/, '')}`;
+}
+
+/** All riders (id, name, phone); suspended ones and riders without a phone are inactive there. */
+export async function pushDrivers(restaurantId: string) {
+  const riders = await db.staffUser.findMany({
+    where: { restaurantId, role: 'RIDER' },
+    select: { id: true, fullName: true, phone: true, status: true },
+    orderBy: { fullName: 'asc' },
+  });
+  const drivers = riders
+    .filter((r) => r.phone && /^\+?[\d\s-]{7,20}$/.test(r.phone))
+    .slice(0, 500)
+    .map((r) => ({
+      id: r.id,
+      name: r.fullName.slice(0, 80),
+      phone: r.phone!.trim(),
+      active: r.status === 'ACTIVE',
+    }));
+  return dc<Record<string, unknown>>('/drivers/sync', {
+    method: 'POST',
+    body: { drivers, missing: 'inactive' },
   });
 }
 
@@ -353,7 +422,7 @@ export async function drainDaljir(limit = 20) {
   const now = new Date();
   const rows = await db.outboxEvent.findMany({
     where: {
-      topic: { in: [DALJIR_ORDER, DALJIR_MENU] },
+      topic: { in: [DALJIR_ORDER, DALJIR_MENU, DALJIR_DRIVERS] },
       status: 'PENDING',
       availableAt: { lte: now },
     },
@@ -362,7 +431,8 @@ export async function drainDaljir(limit = 20) {
   });
   let sent = 0,
     failed = 0,
-    menuResult: unknown = null;
+    menuResult: unknown = null,
+    driversResult: unknown = null;
   for (const row of rows) {
     const lease = await db.outboxEvent.updateMany({
       where: { id: row.id, status: 'PENDING', availableAt: row.availableAt },
@@ -372,6 +442,7 @@ export async function drainDaljir(limit = 20) {
     const payload = (row.payload ?? {}) as { dcOrderId?: string; cancelReason?: string };
     try {
       if (row.topic === DALJIR_MENU) menuResult ??= await pushMenu(row.restaurantId);
+      else if (row.topic === DALJIR_DRIVERS) driversResult ??= await pushDrivers(row.restaurantId);
       else if (payload.dcOrderId) await syncOrder(payload.dcOrderId, payload.cancelReason);
       await db.outboxEvent.update({
         where: { id: row.id },
@@ -382,7 +453,9 @@ export async function drainDaljir(limit = 20) {
           lastError: null,
           ...(row.topic === DALJIR_MENU && menuResult
             ? { payload: { result: menuResult } as Prisma.InputJsonValue }
-            : {}),
+            : row.topic === DALJIR_DRIVERS && driversResult
+              ? { payload: { result: driversResult } as Prisma.InputJsonValue }
+              : {}),
         },
       });
       sent++;
@@ -453,7 +526,7 @@ export async function integrationStatus(restaurantId: string, origin: string) {
       const ref = (e.payload as { dcOrderId?: string } | null)?.dcOrderId;
       return {
         id: e.id,
-        kind: e.topic === DALJIR_MENU ? 'menu' : 'order',
+        kind: e.topic === DALJIR_MENU ? 'menu' : e.topic === DALJIR_DRIVERS ? 'drivers' : 'order',
         orderNumber: ref ? (numbers.get(ref) ?? null) : null,
         status: e.status,
         attempts: e.attempts,
@@ -465,11 +538,14 @@ export async function integrationStatus(restaurantId: string, origin: string) {
   };
 }
 
-/** "Sync menu now": queued and sent at once, so the result shows on the page. */
+/** "Sync menu now": the menu and the riders, queued and sent at once, so the result shows on the page. */
 export async function syncMenuNow(restaurantId: string) {
   if (!daljirConfig().enabled)
     throw new AppError(409, 'Set DALJIRCONNECT_URL and DALJIRCONNECT_API_KEY first');
-  await transaction((tx) => queueMenuSync(tx, restaurantId));
+  await transaction(async (tx) => {
+    await queueMenuSync(tx, restaurantId);
+    await queueDriversSync(tx, restaurantId);
+  });
   return drainDaljir();
 }
 

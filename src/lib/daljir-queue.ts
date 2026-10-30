@@ -6,6 +6,7 @@ import type { Prisma } from '@prisma/client';
 
 export const DALJIR_ORDER = 'daljir.order';
 export const DALJIR_MENU = 'daljir.menu';
+export const DALJIR_DRIVERS = 'daljir.drivers';
 
 export function daljirConfig() {
   const url = process.env.DALJIRCONNECT_URL?.trim().replace(/\/+$/, '') || '';
@@ -32,13 +33,19 @@ export async function queueOrderSync(
   });
 }
 
-/** One pending menu sync is enough: the drain sends the whole menu as it is at that moment. */
-export async function queueMenuSync(tx: Tx, restaurantId: string) {
+/** One pending sync is enough: the drain sends the whole list (menu / riders) as it is at that moment. */
+async function queueWholeSync(tx: Tx, restaurantId: string, topic: string) {
   if (!daljirConfig().enabled) return;
   const pending = await tx.outboxEvent.findFirst({
-    where: { restaurantId, topic: DALJIR_MENU, status: 'PENDING' },
+    where: { restaurantId, topic, status: 'PENDING' },
     select: { id: true },
   });
-  if (!pending)
-    await tx.outboxEvent.create({ data: { restaurantId, topic: DALJIR_MENU, payload: {} } });
+  if (!pending) await tx.outboxEvent.create({ data: { restaurantId, topic, payload: {} } });
 }
+
+export const queueMenuSync = (tx: Tx, restaurantId: string) =>
+  queueWholeSync(tx, restaurantId, DALJIR_MENU);
+
+/** Riders (name + phone) — the customer is told who brings their order. */
+export const queueDriversSync = (tx: Tx, restaurantId: string) =>
+  queueWholeSync(tx, restaurantId, DALJIR_DRIVERS);

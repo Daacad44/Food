@@ -2458,7 +2458,13 @@ function DaljirConnectPanel() {
                 {data.recent.map((e: any) => (
                   <tr key={e.id}>
                     <td>{new Date(e.createdAt).toLocaleTimeString()}</td>
-                    <td>{e.kind === 'menu' ? 'Menu' : `Order ${e.orderNumber ?? '(rejected)'}`}</td>
+                    <td>
+                      {e.kind === 'menu'
+                        ? 'Menu'
+                        : e.kind === 'drivers'
+                          ? 'Riders'
+                          : `Order ${e.orderNumber ?? '(rejected)'}`}
+                    </td>
                     <td>
                       <span className={'badge ' + (SYNC_BADGE[e.status] || '')}>{e.status}</span>
                       {e.lastError && <small className="muted"> {e.lastError}</small>}

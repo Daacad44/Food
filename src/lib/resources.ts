@@ -3,7 +3,7 @@ import { db } from './db';
 import { ensure } from './errors';
 import { audit, transaction } from './orders';
 import { passwordHash, type Actor } from './security';
-import { queueMenuSync } from './daljir-queue';
+import { queueDriversSync, queueMenuSync } from './daljir-queue';
 const text = z.string().trim().min(1).max(200),
   id = z.uuid(),
   amount = z.coerce.number().finite().min(0).max(1000000),
@@ -215,6 +215,12 @@ export async function saveResource(
     // The WhatsApp assistant sells from this menu: send it the change.
     if (name === 'menu' || name === 'categories' || name === 'modifiers')
       await queueMenuSync(tx, user.restaurantId);
+    // Riders (name, phone) are sent too: the customer is told who brings the order.
+    if (
+      name === 'staff' &&
+      (result.role === 'RIDER' || data.role || data.status || data.phone || data.fullName)
+    )
+      await queueDriversSync(tx, user.restaurantId);
     const { passwordHash: _password, ...safe } = result;
     return safe;
   });
