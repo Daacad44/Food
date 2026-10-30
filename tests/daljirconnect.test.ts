@@ -15,7 +15,18 @@ process.env.DALJIRCONNECT_WEBHOOK_SECRET = SECRET;
 process.env.NEXT_PUBLIC_APP_URL = 'https://food.daljir.tech';
 
 /** A fake DaljirConnect /v2: orders by id, with the same status rules (NEW must be confirmed first). */
-type DcOrder = { id: string; status: string; paymentStatus: string; externalId: string | null };
+type DcOrder = {
+  id: string;
+  status: string;
+  paymentStatus: string;
+  externalId: string | null;
+  driver?: { name: string; phone: string } | null;
+};
+let driverSyncs: any[] = [];
+const e164 = (p: string) => {
+  const d = p.replace(/[^\d+]/g, '');
+  return d.startsWith('+') ? d : d.startsWith('252') ? `+${d}` : `+252${d.replace(/^0+/, '')}`;
+};
 const dcOrders = new Map<string, DcOrder>();
 const calls: { method: string; path: string; body: any }[] = [];
 let menuSyncs: any[] = [];
@@ -45,6 +56,10 @@ vi.stubGlobal('fetch', async (input: string, init: RequestInit = {}) => {
     failNext = null;
     return reply(404, { error: { code: 'NOT_FOUND', message: 'Order not found' } });
   }
+  if (path === '/drivers/sync') {
+    driverSyncs.push(body);
+    return reply(200, { data: { received: body.drivers.length } });
+  }
   if (path === '/catalog/sync') {
     menuSyncs.push(body);
     return reply(200, { data: { received: body.products.length } });
@@ -58,6 +73,7 @@ vi.stubGlobal('fetch', async (input: string, init: RequestInit = {}) => {
       o,
       body.externalId !== undefined ? { externalId: body.externalId } : {},
       body.paymentStatus ? { paymentStatus: body.paymentStatus } : {},
+      body.driver ? { driver: { name: body.driver.name, phone: e164(body.driver.phone) } } : {},
     );
     return reply(200, { data: o });
   }
@@ -134,6 +150,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   calls.length = 0;
   menuSyncs = [];
+  driverSyncs = [];
   failNext = null;
   await db.outboxEvent.updateMany({
     where: { topic: { startsWith: 'daljir.' }, status: 'PENDING' },
@@ -323,5 +340,77 @@ describe('DaljirConnect (WhatsApp ordering)', () => {
     expect(status.recent.some((e: any) => e.status === 'FAILED' && /404/.test(e.lastError))).toBe(
       true,
     );
+  });
+
+  it('an order for someone else: they are the guest, the notes say who ordered and pays', async () => {
+    const o = dcOrder({
+      number: 52,
+      recipient: { name: 'Hooyo Faadumo', phone: '+252617778888', whatsapp: true },
+    });
+    expect((await send(o)).body).toMatchObject({ imported: true });
+    const order = await db.order.findUniqueOrThrow({ where: { externalRef: o.id } });
+    expect(order).toMatchObject({ guestName: 'Hooyo Faadumo', guestPhone: '+252617778888' });
+    expect(order.notes).toContain(
+      '🎁 Loo dalbay Hooyo Faadumo — waxaa dalbaday oo bixinaya Amina Cali (+252615000001)',
+    );
+  });
+
+  it('riders sync like the menu; assigning one sends the customer the name and phone, once', async () => {
+    const login = await POST(
+      new Request('http://localhost:3000/api/v1/auth/staff/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: 'dc-owner@botan.local', password: 'DaljirConnect!Test26' }),
+      }),
+      { params: Promise.resolve({ path: ['auth', 'staff', 'login'] }) },
+    );
+    const cookie = login.headers.get('set-cookie')!.split(';')[0];
+    const rider = await saveResource(
+      'staff',
+      {
+        fullName: 'Cali Axmed',
+        email: `rider-${randomUUID().slice(0, 6)}@botan.local`,
+        phone: '0615551234',
+        role: 'RIDER',
+        password: 'Rider!Password26',
+      },
+      owner,
+    );
+    await drainDaljir();
+    expect(driverSyncs.at(-1).missing).toBe('inactive');
+    expect(driverSyncs.at(-1).drivers).toContainEqual({
+      id: rider.id,
+      name: 'Cali Axmed',
+      phone: '0615551234',
+      active: true,
+    });
+
+    const o = dcOrder({ number: 53 });
+    await send(o);
+    const order = await db.order.findUniqueOrThrow({
+      where: { externalRef: o.id },
+      include: { delivery: true },
+    });
+    await transitionOrder(order.id, 'CONFIRMED', owner);
+    await drainDaljir();
+    calls.length = 0;
+    const assign = () =>
+      POST(
+        new Request(`http://localhost:3000/api/v1/admin/deliveries/${order.delivery!.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json', cookie },
+          body: JSON.stringify({ riderId: rider.id }),
+        }),
+        { params: Promise.resolve({ path: ['admin', 'deliveries', order.delivery!.id] }) },
+      );
+    expect((await assign()).status).toBe(200);
+    await drainDaljir();
+    expect(dcOrders.get(o.id)!.driver).toEqual({ name: 'Cali Axmed', phone: '+252615551234' });
+    const patches = () => calls.filter((c) => c.method === 'PATCH' && c.body.driver);
+    expect(patches()).toHaveLength(1);
+    // The same rider again: nothing new is sent.
+    await assign();
+    await drainDaljir();
+    expect(patches()).toHaveLength(1);
   });
 });

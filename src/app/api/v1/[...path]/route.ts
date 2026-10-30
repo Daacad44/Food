@@ -50,7 +50,7 @@ import {
   scheduleDrain,
   syncMenuNow,
 } from '@/lib/daljirconnect';
-import { queueMenuSync } from '@/lib/daljir-queue';
+import { queueMenuSync, queueOrderSync } from '@/lib/daljir-queue';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 type Context = { params: Promise<{ path: string[] }> };
@@ -779,7 +779,39 @@ async function handle(request: Request, context: Context) {
           .object({ riderId: z.uuid() })
           .strict()
           .parse(await body());
-      return json(await assignRider(z.uuid().parse(p[2]), d.riderId, u));
+      return json(
+        await transaction(async (tx) => {
+          const delivery = await tx.delivery.findFirst({
+            where: { id: p[2], order: { restaurantId: u.restaurantId } },
+          });
+          ensure(
+            delivery && ['PENDING', 'ASSIGNED'].includes(delivery.status),
+            'Delivery cannot be assigned',
+            409,
+          );
+          ensure(
+            await tx.staffUser.findFirst({
+              where: {
+                id: d.riderId,
+                restaurantId: u.restaurantId,
+                role: 'RIDER',
+                status: 'ACTIVE',
+              },
+            }),
+            'Rider not found',
+          );
+          const result = await tx.delivery.update({
+            where: { id: p[2] },
+            data: { riderId: d.riderId, status: 'ASSIGNED', assignedAt: new Date() },
+            include: { order: { select: { externalRef: true, channel: true } } },
+          });
+          await audit(tx, u, 'ASSIGN_RIDER', 'Delivery', p[2]);
+          // A WhatsApp order: the customer gets the rider's name and phone.
+          if (result.order.channel === 'WHATSAPP' && result.order.externalRef)
+            await queueOrderSync(tx, u.restaurantId, result.order.externalRef);
+          return result;
+        }),
+      );
     }
     if (p[0] === 'tables' && p[1] && method === 'GET') {
       const table = await db.diningTable.findUnique({
