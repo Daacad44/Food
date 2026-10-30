@@ -1,3 +1,4 @@
+import { assignRider, createRider, completeDelivery } from '@/lib/delivery';
 import { trackingView } from '@/lib/tracking-view';
 import QRCode from 'qrcode';
 import { NextResponse } from 'next/server';
@@ -731,12 +732,29 @@ async function handle(request: Request, context: Context) {
         }),
       );
     }
+    if (path === 'admin/delivery/riders' && method === 'POST') {
+      const user = await requireActor(request, MANAGERS);
+      return json(await createRider(await body(), user), 201);
+    }
+    if (
+      ['admin', 'rider'].includes(p[0]) &&
+      p[1] === 'orders' &&
+      p[2] &&
+      p[3] === 'complete-delivery' &&
+      method === 'POST'
+    ) {
+      const user = await requireActor(
+        request,
+        p[0] === 'admin' ? MANAGERS : ['OWNER', 'MANAGER', 'RIDER'],
+      );
+      return json(await completeDelivery(z.uuid().parse(p[2]), await body(), user));
+    }
     if (path === 'admin/delivery/riders' && method === 'GET') {
       const u = await requireActor(request, MANAGERS);
       return json(
         await db.staffUser.findMany({
           where: { restaurantId: u.restaurantId, role: 'RIDER', status: 'ACTIVE' },
-          select: { id: true, fullName: true, phone: true },
+          select: { id: true, fullName: true, phone: true, email: true },
         }),
       );
     }

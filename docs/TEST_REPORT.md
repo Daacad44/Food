@@ -1,5 +1,12 @@
 # Validation report — 21 October 2026
 
+## Driver assignment and completion fix — 24 October 2026
+
+- 57 unit/PostgreSQL integration tests and 18 desktop/mobile browser tests passed, including the existing DaljirConnect integration suite. Production build and TypeScript passed.
+- Added 10 delivery integration tests covering scoped rider creation, fixed-role enforcement, assignment/audit, suspended/terminal assignment rejection, admin completion without a driver, assigned-rider-only completion, explicit cash confirmation, outstanding split tenders, concurrent retries, prepaid delivery and rollback of cash collection when completion fails.
+- Added desktop/mobile browser journeys that create a driver from the actual order screen, assign the driver, sign in as that driver, pick up and complete the order. A second journey confirms delivery and cash directly as admin without a driver.
+- No schema migration or hosted database change is included. Existing custom branding, rider layouts and DaljirConnect callbacks/outbox behaviour are preserved.
+
 The application was built and exercised in the cloud workspace using Node 24.19.0, Next.js 16.4.2, Prisma 7.10.1, and real local PostgreSQL. Production Supabase and Vercel access were not available.
 
 | Check                                    | Result                                                                                                    |
