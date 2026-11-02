@@ -269,23 +269,43 @@ export async function setUserStatus(id: string, status: 'ACTIVE' | 'SUSPENDED', 
   });
 }
 
-/** Gives the person a new password (generated unless one is supplied) that they must change. */
+/**
+ * Sets a new password for someone. By default it is temporary (generated unless supplied) and must be
+ * changed at their next sign-in. An owner may instead set a permanent password (`temporary: false`) that
+ * the person keeps. Either way every device is signed out.
+ */
 export async function resetPassword(id: string, body: unknown, user: Actor) {
   const data = z
-    .object({ password: password.optional() })
+    .object({ password: password.optional(), temporary: z.boolean().default(true) })
     .strict()
     .parse(body ?? {});
+  if (!data.temporary) {
+    ensure(user.role === 'OWNER', 'Milkiilaha kaliya ayaa dejin kara password rasmi ah', 403);
+    ensure(data.password, 'Geli password-ka rasmiga ah');
+  }
   const value = data.password || temporaryPassword();
   const hash = await passwordHash(value);
   return transaction(async (tx) => {
     await guardTarget(tx, id, user);
     await tx.staffUser.update({
       where: { id },
-      data: { passwordHash: hash, mustChangePassword: true, passwordChangedAt: new Date() },
+      data: {
+        passwordHash: hash,
+        mustChangePassword: data.temporary,
+        passwordChangedAt: new Date(),
+      },
     });
     await signOut(tx, id);
-    await audit(tx, user, 'USER_PASSWORD_RESET', 'StaffUser', id);
-    return { temporaryPassword: value };
+    await audit(
+      tx,
+      user,
+      data.temporary ? 'USER_PASSWORD_RESET' : 'USER_PASSWORD_SET',
+      'StaffUser',
+      id,
+    );
+    return data.temporary
+      ? { temporary: true, temporaryPassword: data.password ? null : value }
+      : { temporary: false };
   });
 }
 

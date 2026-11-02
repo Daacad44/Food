@@ -1,10 +1,20 @@
 import { test, expect, type Page } from '@playwright/test';
+// Sign-ins are rate limited per account (8 per 15 minutes), so the owner signs in through the form once
+// and later tests reuse that session.
+let ownerCookies: Awaited<ReturnType<ReturnType<Page['context']>['cookies']>> | null = null;
 async function signIn(page: Page) {
+  if (ownerCookies) {
+    await page.context().addCookies(ownerCookies);
+    await page.goto('/admin/orders/new');
+    await expect(page.getByRole('heading', { name: 'Dalab cusub' })).toBeVisible();
+    return;
+  }
   await page.goto('/');
   await page.getByLabel('Email', { exact: true }).fill(process.env.OWNER_EMAIL!);
   await page.getByLabel('Password', { exact: true }).fill(process.env.OWNER_PASSWORD!);
   await page.getByRole('button', { name: 'Gal' }).click();
   await expect(page).toHaveURL('/admin/orders/new');
+  ownerCookies = await page.context().cookies();
 }
 test('signing in opens the order screen; a delivery order is taken and priced', async ({
   page,
@@ -106,4 +116,32 @@ test('an owner changes a role straight from the users list', async ({ page }) =>
   await dialog.getByRole('button', { name: 'Xaqiiji' }).click();
   await expect(page.getByRole('status').filter({ hasText: 'hadda waa Cashier' })).toBeVisible();
   await expect(row.getByRole('combobox')).toHaveValue('CASHIER');
+});
+
+test('an owner gives a user a real password they can sign in with straight away', async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  const stamp = Date.now(),
+    name = `Real Password ${stamp}`,
+    email = `real-${stamp}@botan.local`;
+  const created = await page.request.post('/api/v1/admin/users', {
+    data: { fullName: name, email, role: 'CASHIER' },
+  });
+  const { user } = await created.json();
+  await page.goto('/admin/users/' + user.id);
+  await page.getByRole('button', { name: 'Beddel password-ka' }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Password rasmi ah', { exact: true }).fill('RealCashier2026');
+  await dialog.getByLabel('Ku celi password-ka').fill('RealCashier2026');
+  await dialog.getByRole('button', { name: 'Dejin password-ka' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'Password rasmi ah' })).toBeVisible();
+
+  const other = await (await browser.newContext()).newPage();
+  await other.goto('/login');
+  await other.getByLabel('Email', { exact: true }).fill(email);
+  await other.getByLabel('Password', { exact: true }).fill('RealCashier2026');
+  await other.getByRole('button', { name: 'Gal' }).click();
+  await expect(other).toHaveURL('/admin/orders/new');
 });

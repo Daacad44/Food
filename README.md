@@ -51,7 +51,8 @@ over orders: take, assign riders, record payments, confirm delivery, cancel and 
   showing what the person gains and loses. Select several people for **bulk** role change, suspend, reactivate or
   sign-out; each is checked on its own and refusals are listed. Sort any column, filter by tapping a count, **export
   CSV**.
-- Per person: edit name, email, phone and role; **reset password**, **sign out of all devices** or one device,
+- Per person: edit name, email, phone and role; **set a password**: owners can give a permanent password the person
+  keeps, or (owners and managers) a generated or typed temporary one that must be changed at next sign-in; **sign out of all devices** or one device,
   **suspend / reactivate**; activity history from the audit log.
 - **Akoonkayga** (`/account`): everyone edits their own name and phone, changes their password (other devices are
   signed out) and sees their devices.
