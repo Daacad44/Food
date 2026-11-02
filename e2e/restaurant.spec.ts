@@ -56,3 +56,35 @@ test('signed-out visitors only see the login page', async ({ page }) => {
   await page.goto('/menu');
   await expect(page).toHaveURL('/login');
 });
+test('an owner adds a user who must choose a password at first sign-in', async ({
+  page,
+  browser,
+}) => {
+  await signIn(page);
+  await page.goto('/admin/users');
+  await expect(page.getByRole('heading', { name: 'Isticmaalayaasha' })).toBeVisible();
+  await page.getByRole('button', { name: 'Ku dar isticmaale' }).click();
+  const dialog = page.getByRole('dialog');
+  const stamp = Date.now(),
+    email = `operator-${stamp}@botan.local`,
+    name = `Browser Operator ${stamp}`;
+  await dialog.getByLabel('Magaca oo dhan').fill(name);
+  await dialog.getByLabel('Email (login)').fill(email);
+  await dialog.getByText('Dalab-qaade', { exact: true }).click();
+  await dialog.getByRole('button', { name: 'Abuur akoonka' }).click();
+  const temporary = (await page.locator('.temp-password code').textContent())!.trim();
+  await expect(page.getByRole('link', { name: new RegExp(name) })).toBeVisible();
+
+  const other = await (await browser.newContext()).newPage();
+  await other.goto('/login');
+  await other.getByLabel('Email', { exact: true }).fill(email);
+  await other.getByLabel('Password', { exact: true }).fill(temporary);
+  await other.getByRole('button', { name: 'Gal' }).click();
+  await expect(other.getByRole('heading', { name: 'Dooro password kuu gaar ah' })).toBeVisible();
+  await other.getByLabel('Password-ka ku meel gaarka ah').fill(temporary);
+  await other.getByLabel('Password cusub').fill('BrowserOperator2026');
+  await other.getByLabel('Ku celi password-ka cusub').fill('BrowserOperator2026');
+  await other.getByRole('button', { name: 'Beddel password-ka' }).click();
+  await expect(other).toHaveURL('/admin/orders/new');
+  await expect(other.getByRole('link', { name: 'Isticmaalayaasha' })).toHaveCount(0);
+});

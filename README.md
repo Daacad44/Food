@@ -41,6 +41,20 @@ Open the application on port 3000; it opens on the staff login. The local databa
 Roles are enforced in the API: `OWNER`, `MANAGER`, `OPERATOR` (order taker), `RIDER`, `ACCOUNTANT`. Cashier accounts
 became order takers; former kitchen accounts are suspended by the migration until an owner reviews them.
 
+### User management (`/admin/users`)
+
+- List with counts (total, active, signed in now, suspended, waiting for a new password), search, role and status
+  filters, last sign-in, devices and work done (orders taken, deliveries). A roles & permissions matrix.
+- Add a user with a role description picker and either a one-time **temporary password** (shown once, copyable) or a
+  password you set; temporary passwords must be changed at first sign-in, and nothing else works until they are.
+- Per person: edit name, email, phone and role; **reset password**, **sign out of all devices** or one device,
+  **suspend / reactivate**; activity history from the audit log.
+- **Akoonkayga** (`/account`): everyone edits their own name and phone, changes their password (other devices are
+  signed out) and sees their devices.
+- Rules: owners manage everyone; managers manage order takers and riders only; nobody changes their own role or
+  status there; a rider with an order on the road cannot be suspended; role, password and status changes sign the
+  person out everywhere. Passwords are 12+ characters with letters and digits, bcrypt-hashed, never returned.
+
 ## Architecture
 
 This implementation adapts the original blueprint to **Vercel + Supabase PostgreSQL**:

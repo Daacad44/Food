@@ -42,6 +42,18 @@ import {
   processOutbox,
 } from '@/lib/operations';
 import { paymentModes, requireProvider } from '@/lib/payments';
+import {
+  changeMyPassword,
+  createUser,
+  getUser,
+  listUsers,
+  myAccount,
+  resetPassword,
+  revokeSessions,
+  setUserStatus,
+  updateMyAccount,
+  updateUser,
+} from '@/lib/users';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 type Context = { params: Promise<{ path: string[] }> };
@@ -127,9 +139,27 @@ async function handle(request: Request, context: Context) {
         data.password,
         user?.passwordHash || '$2b$12$C6UzMDM.H6dfI/f/IKcEe.0WsVrH6QUnAm/uCixnH4DcZ1Kc7JrP2',
       );
-      ensure(user && valid && user.status === 'ACTIVE', 'Email ama password khaldan', 401);
-      return json({ ok: true, role: user.role }, 200, {
-        'Set-Cookie': await createSession(user.id, 'staff'),
+      ensure(user && valid, 'Email ama password khaldan', 401);
+      ensure(user.status === 'ACTIVE', 'Akoonkan waa la hakiyey. La xiriir maamulaha.', 403);
+      const cookie = await createSession(user.id, 'staff', request.headers.get('user-agent'));
+      await transaction(async (tx) => {
+        await tx.staffUser.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
+        await audit(
+          tx,
+          {
+            id: user.id,
+            role: user.role,
+            name: user.fullName,
+            kind: 'staff',
+            restaurantId: user.restaurantId,
+          },
+          'LOGIN',
+          'StaffUser',
+          user.id,
+        );
+      });
+      return json({ ok: true, role: user.role, mustChangePassword: user.mustChangePassword }, 200, {
+        'Set-Cookie': cookie,
       });
     }
     if (path === 'auth/logout' && method === 'POST') {
@@ -144,6 +174,51 @@ async function handle(request: Request, context: Context) {
       const token = cookieToken(request);
       if (token) await db.authSession.deleteMany({ where: { tokenHash: digest(token) } });
       return json({ ok: true }, 200, { 'Set-Cookie': await createSession(u.id, u.kind) });
+    }
+    // ---- Users (staff accounts) ----
+    if (path === 'admin/users' && method === 'GET')
+      return json(await listUsers(await requireActor(request, MANAGERS)));
+    if (path === 'admin/users' && method === 'POST')
+      return json(await createUser(await body(), await requireActor(request, MANAGERS)), 201);
+    if (p[0] === 'admin' && p[1] === 'users' && p[2]) {
+      const u = await requireActor(request, MANAGERS),
+        id = z.uuid().parse(p[2]);
+      if (p.length === 3 && method === 'GET') return json(await getUser(id, u));
+      if (p.length === 3 && method === 'PATCH') return json(await updateUser(id, await body(), u));
+      if (p[3] === 'suspend' && method === 'POST')
+        return json(await setUserStatus(id, 'SUSPENDED', u));
+      if (p[3] === 'activate' && method === 'POST')
+        return json(await setUserStatus(id, 'ACTIVE', u));
+      if (p[3] === 'reset-password' && method === 'POST')
+        return json(await resetPassword(id, await body(), u));
+      if (p[3] === 'sessions' && p[4] === 'revoke' && method === 'POST') {
+        const d = z
+          .object({ sessionId: z.uuid().optional() })
+          .strict()
+          .parse(await body());
+        return json(await revokeSessions(id, u, d.sessionId));
+      }
+    }
+    // ---- My account (allowed while a temporary password must be changed) ----
+    if (path === 'account' && method === 'GET')
+      return json(
+        await myAccount(await requireActor(request, undefined, { allowPendingPassword: true })),
+      );
+    if (path === 'account' && method === 'PATCH')
+      return json(await updateMyAccount(await body(), await requireActor(request)));
+    if (path === 'account/password' && method === 'POST') {
+      const u = await requireActor(request, undefined, { allowPendingPassword: true });
+      await limit(`password:${u.id}`, 10, 900);
+      return json(await changeMyPassword(await body(), u));
+    }
+    if (path === 'account/sessions/revoke' && method === 'POST') {
+      const u = await requireActor(request);
+      const d = z
+        .object({ sessionId: z.uuid() })
+        .strict()
+        .parse(await body());
+      ensure(d.sessionId !== u.sessionId, 'Isticmaal "Ka bax" si aad uga baxdo qalabkan', 400);
+      return json(await revokeSessions(u.id, u, d.sessionId));
     }
     // ---- Menu for the order screen ----
     if (path === 'menu/categories' && method === 'GET') {
@@ -450,7 +525,6 @@ async function handle(request: Request, context: Context) {
         return json(await saveResource(name, await body(), u, p[3]), method === 'POST' ? 201 : 200);
       if (method === 'DELETE') {
         ensure(u.role === 'OWNER' || u.role === 'MANAGER', 'Permission denied', 403);
-        ensure(name !== 'staff', 'Suspend staff instead of deleting', 400);
         ensure(p[3], 'ID required');
         return json(
           await transaction(async (tx) => {

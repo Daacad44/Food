@@ -496,10 +496,10 @@ describe('HTTP: authorization, the orders board and payments', () => {
     expect((await call('payments/' + p.id + '/capture', 'POST', {})).status).toBe(401);
   });
   it('keeps password hashes out of lists and only offers the new roles', async () => {
-    const rows = await (await call('admin/resources/staff', 'GET', undefined, ownerCookie)).json();
+    const rows = await (await call('admin/users', 'GET', undefined, ownerCookie)).json();
     expect(rows[0]).not.toHaveProperty('passwordHash');
     const bad = await call(
-      'admin/resources/staff',
+      'admin/users',
       'POST',
       {
         fullName: 'Chef',

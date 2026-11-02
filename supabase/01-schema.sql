@@ -1043,6 +1043,31 @@ CREATE INDEX "Order_guestPhone_idx" ON "Order"("guestPhone");
 END
 $botan_migration$;
 
+DO $botan_migration$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611020002_user_management' AND rolled_back_at IS NULL AND finished_at IS NULL) THEN
+    RAISE EXCEPTION 'Unfinished migration: 202611020002_user_management. Resolve it before running setup.';
+  ELSIF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611020002_user_management' AND rolled_back_at IS NULL AND finished_at IS NOT NULL) THEN
+    IF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611020002_user_management' AND rolled_back_at IS NULL AND checksum <> '1f88347038f7c852530d55f1d1196a00871b05530d84cf5ef6b3077b28dd53a3') THEN
+      RAISE EXCEPTION 'Migration checksum mismatch: 202611020002_user_management. No changes applied.';
+    END IF;
+    RAISE NOTICE 'Already applied: 202611020002_user_management';
+  ELSE
+-- User management: sign-in history, password changes and devices.
+ALTER TABLE "StaffUser" ADD COLUMN "lastLoginAt" TIMESTAMP(3);
+ALTER TABLE "StaffUser" ADD COLUMN "passwordChangedAt" TIMESTAMP(3);
+-- Set when an owner/manager gives someone a temporary password: they must choose their own at next sign-in.
+ALTER TABLE "StaffUser" ADD COLUMN "mustChangePassword" BOOLEAN NOT NULL DEFAULT false;
+-- The browser/device a session was opened from, shown so staff can recognise and sign out devices.
+ALTER TABLE "AuthSession" ADD COLUMN "userAgent" TEXT;
+CREATE INDEX "AuthSession_subjectId_idx" ON "AuthSession"("subjectId");
+
+    INSERT INTO public."_prisma_migrations" (id, checksum, finished_at, migration_name, applied_steps_count)
+    VALUES (gen_random_uuid()::text, '1f88347038f7c852530d55f1d1196a00871b05530d84cf5ef6b3077b28dd53a3', now(), '202611020002_user_management', 1);
+  END IF;
+END
+$botan_migration$;
+
 ALTER TABLE public."_prisma_migrations" ENABLE ROW LEVEL SECURITY;
 COMMIT;
 SELECT migration_name, finished_at FROM public."_prisma_migrations" WHERE rolled_back_at IS NULL ORDER BY migration_name;
