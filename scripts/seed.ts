@@ -16,7 +16,7 @@ const restaurant = await db.restaurant.upsert({
     phone: '+252 61 000 0000',
     address: 'Mogadishu, Somalia',
     timezone: 'Africa/Mogadishu',
-    settings: { create: { taxRate: 0, minimumOrder: 3, averagePrepMinutes: 25 } },
+    settings: { create: { taxRate: 5, minimumOrder: 0, averagePrepMinutes: 25 } },
     hours: {
       create: Array.from({ length: 7 }, (_, dayOfWeek) => ({
         dayOfWeek,
@@ -178,31 +178,13 @@ for (const [name, deliveryFee, etaMinutes] of [
   ['Wadajir', 2.5, 35],
   ['Waberi', 2, 30],
   ['Hamar Weyne', 3, 40],
+  ['Bakaaro', 1.5, 25],
 ] as const)
   await db.deliveryZone.upsert({
     where: { restaurantId_name: { restaurantId: restaurant.id, name } },
     update: {},
     create: { restaurantId: restaurant.id, name, deliveryFee, etaMinutes },
   });
-for (let n = 1; n <= 8; n++)
-  await db.diningTable.upsert({
-    where: { restaurantId_tableNumber: { restaurantId: restaurant.id, tableNumber: String(n) } },
-    update: {},
-    create: { restaurantId: restaurant.id, tableNumber: String(n), capacity: n < 5 ? 4 : 6 },
-  });
-await db.coupon.upsert({
-  where: { restaurantId_code: { restaurantId: restaurant.id, code: 'BOTAN10' } },
-  update: {},
-  create: {
-    restaurantId: restaurant.id,
-    code: 'BOTAN10',
-    type: 'PERCENTAGE',
-    value: 10,
-    minSpend: 10,
-    maxDiscount: 5,
-    usageLimit: 1000,
-  },
-});
 const stock = await db.inventoryItem.upsert({
   where: { restaurantId_name: { restaurantId: restaurant.id, name: 'Burger patties' } },
   update: {},
@@ -247,6 +229,6 @@ await db.menuItemModifierGroup.upsert({
   create: { menuItemId: burger.id, groupId: group.id },
 });
 console.log(
-  'Seed complete: restaurant, owner, 10 menu items, 4 delivery zones, 8 tables, coupon, modifiers, and sample inventory. Existing records preserved.',
+  'Seed complete: restaurant, owner, 10 menu items, 5 delivery zones, modifiers and sample inventory. Existing records preserved.',
 );
 await db.$disconnect();

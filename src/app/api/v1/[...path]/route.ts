@@ -1,9 +1,7 @@
-import { assignRider, createRider, completeDelivery } from '@/lib/delivery';
-import { trackingView } from '@/lib/tracking-view';
-import QRCode from 'qrcode';
+import { createRider, completeDelivery } from '@/lib/delivery';
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { Prisma, type OrderStatus } from '@prisma/client';
+import { Prisma } from '@prisma/client';
 import { db } from '@/lib/db';
 import { AppError, ensure } from '@/lib/errors';
 import {
@@ -11,22 +9,23 @@ import {
   requireActor,
   createSession,
   verifyPassword,
-  passwordHash,
   digest,
   cookieToken,
   sameOrigin,
   limit,
   MANAGERS,
   FINANCE,
-  CASHIERS,
+  ORDER_TAKERS,
+  ORDER_READERS,
   constantEqual,
 } from '@/lib/security';
-import { checkoutSchema } from '@/lib/domain';
+import { ORDER_VIEWS, staffOrderSchema, viewStatuses, type OrderView } from '@/lib/domain';
 import {
   restaurant,
   quote,
   createOrder,
   transitionOrder,
+  assignRider,
   orderInclude,
   transaction,
   audit,
@@ -34,33 +33,54 @@ import {
 import { isResource, listResource, saveResource, delegate } from '@/lib/resources';
 import {
   capturePayment,
+  captureSchema,
   refundPayment,
   stockMovement,
   purchase,
   receivePurchase,
-  openShift,
-  closeShift,
   finance,
   processOutbox,
 } from '@/lib/operations';
-import {
-  drainDaljir,
-  handleWebhook,
-  integrationStatus,
-  scheduleDrain,
-  syncMenuNow,
-} from '@/lib/daljirconnect';
-import { queueMenuSync, queueOrderSync } from '@/lib/daljir-queue';
+import { paymentModes, requireProvider } from '@/lib/payments';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 type Context = { params: Promise<{ path: string[] }> };
+const DAY = /^\d{4}-\d{2}-\d{2}$/;
+/** Order filters shared by the list and its tab counts. Days are Africa/Mogadishu (UTC+3). */
+function orderFilters(url: URL, restaurantId: string): Prisma.OrderWhereInput {
+  const from = url.searchParams.get('from'),
+    to = url.searchParams.get('to'),
+    q = url.searchParams.get('q')?.trim().slice(0, 60);
+  const createdAt: Prisma.DateTimeFilter = {};
+  if (from) createdAt.gte = new Date(z.string().regex(DAY).parse(from) + 'T00:00:00+03:00');
+  if (to) {
+    const end = new Date(z.string().regex(DAY).parse(to) + 'T00:00:00+03:00');
+    end.setUTCDate(end.getUTCDate() + 1);
+    createdAt.lt = end;
+  }
+  return {
+    restaurantId,
+    ...(from || to ? { createdAt } : {}),
+    ...(q
+      ? {
+          OR: [
+            { orderNumber: { contains: q, mode: 'insensitive' } },
+            { guestName: { contains: q, mode: 'insensitive' } },
+            { guestPhone: { contains: q } },
+            { deliveryAddress: { contains: q, mode: 'insensitive' } },
+          ],
+        }
+      : {}),
+  };
+}
 async function handle(request: Request, context: Context) {
   try {
-    sameOrigin(request);
     const { path: p } = await context.params;
     const path = p.join('/'),
       method = request.method,
       url = new URL(request.url);
+    // Provider callbacks are verified by signature instead of the same-origin rule.
+    if (!(p[0] === 'webhooks' && method === 'POST')) sameOrigin(request);
     const json = (data: unknown, status = 200, headers?: Record<string, string>) =>
       NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store', ...headers } });
     const body = async () => {
@@ -73,9 +93,6 @@ async function handle(request: Request, context: Context) {
         throw new AppError(400, 'Invalid JSON');
       }
     };
-    // Changes may have queued pushes to DaljirConnect (WhatsApp); staff boards polling also retry failed ones.
-    if (method !== 'GET' || ['admin/orders', 'kitchen/orders', 'pos/orders'].includes(path))
-      await scheduleDrain();
     if (path === 'health' && method === 'GET') {
       await db.$queryRaw`SELECT 1`;
       return json({ status: 'ok', service: 'botan', database: 'connected' });
@@ -93,76 +110,11 @@ async function handle(request: Request, context: Context) {
         isAcceptingOrders: r.isAcceptingOrders,
         settings: r.settings,
         hours: r.hours,
+        paymentModes: paymentModes(),
       });
-    }
-    if (path === 'menu/categories' && method === 'GET') {
-      const r = await restaurant();
-      return json(
-        await db.menuCategory.findMany({
-          where: { restaurantId: r.id, isActive: true },
-          orderBy: { sortOrder: 'asc' },
-        }),
-      );
-    }
-    if (p[0] === 'menu' && p[1] === 'items' && method === 'GET') {
-      const r = await restaurant();
-      const where = {
-        restaurantId: r.id,
-        category: { isActive: true },
-        ...(p[2] ? { slug: p[2] } : {}),
-        ...(url.searchParams.get('category')
-          ? { category: { slug: url.searchParams.get('category')!, isActive: true } }
-          : {}),
-      };
-      const items = await db.menuItem.findMany({
-        where,
-        include: {
-          category: true,
-          modifierGroups: {
-            include: { group: { include: { options: { where: { isAvailable: true } } } } },
-          },
-        },
-        orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
-        take: 100,
-      });
-      if (p[2]) {
-        ensure(items[0], 'Menu item not found', 404);
-        return json(items[0]);
-      }
-      return json(items);
-    }
-    if (path === 'delivery/zones' && method === 'GET') {
-      const r = await restaurant();
-      return json(
-        await db.deliveryZone.findMany({ where: { restaurantId: r.id, isActive: true } }),
-      );
-    }
-    if (path === 'offers' && method === 'GET') {
-      const r = await restaurant(),
-        now = new Date();
-      return json(
-        await db.coupon.findMany({
-          where: {
-            restaurantId: r.id,
-            isActive: true,
-            AND: [
-              { OR: [{ startsAt: null }, { startsAt: { lte: now } }] },
-              { OR: [{ endsAt: null }, { endsAt: { gt: now } }] },
-            ],
-          },
-          select: {
-            code: true,
-            type: true,
-            value: true,
-            minSpend: true,
-            maxDiscount: true,
-            endsAt: true,
-          },
-        }),
-      );
     }
     if (path === 'auth/me' && method === 'GET') return json({ user: await actor(request) });
-    if (['auth/staff/login', 'auth/customer/login'].includes(path) && method === 'POST') {
+    if (path === 'auth/staff/login' && method === 'POST') {
       const data = z
         .object({ email: z.string().trim().min(3).max(200), password: z.string().min(1).max(72) })
         .strict()
@@ -170,52 +122,15 @@ async function handle(request: Request, context: Context) {
       const identity = data.email.toLowerCase();
       await limit(`login:${digest(identity)}`, 8, 900);
       await limit(`login-ip:${digest(request.headers.get('x-forwarded-for') || 'local')}`, 40, 900);
-      const kind = path.includes('staff') ? 'staff' : 'customer';
-      const user =
-        kind === 'staff'
-          ? await db.staffUser.findUnique({ where: { email: identity } })
-          : await db.customer.findFirst({
-              where: { OR: [{ email: identity }, { phone: identity }] },
-            });
+      const user = await db.staffUser.findUnique({ where: { email: identity } });
       const valid = await verifyPassword(
         data.password,
         user?.passwordHash || '$2b$12$C6UzMDM.H6dfI/f/IKcEe.0WsVrH6QUnAm/uCixnH4DcZ1Kc7JrP2',
       );
-      ensure(
-        user && valid && (!('status' in user) || user.status === 'ACTIVE'),
-        'Email/telefoon ama password khaldan',
-        401,
-      );
-      return json({ ok: true }, 200, { 'Set-Cookie': await createSession(user.id, kind) });
-    }
-    if (path === 'auth/customer/register' && method === 'POST') {
-      const d = z
-        .object({
-          fullName: z.string().trim().min(2).max(100),
-          phone: z.string().regex(/^\+?[\d\s-]{7,20}$/),
-          email: z.email().toLowerCase().optional(),
-          password: z.string().min(12).max(72),
-        })
-        .strict()
-        .parse(await body());
-      await limit(`register:${digest(request.headers.get('x-forwarded-for') || 'local')}`, 5, 3600);
-      const r = await restaurant();
-      if (d.email)
-        ensure(
-          !(await db.customer.findFirst({ where: { email: d.email } })),
-          'Email already registered',
-          409,
-        );
-      const user = await db.customer.create({
-        data: {
-          restaurantId: r.id,
-          fullName: d.fullName,
-          phone: d.phone,
-          email: d.email,
-          passwordHash: await passwordHash(d.password),
-        },
+      ensure(user && valid && user.status === 'ACTIVE', 'Email ama password khaldan', 401);
+      return json({ ok: true, role: user.role }, 200, {
+        'Set-Cookie': await createSession(user.id, 'staff'),
       });
-      return json({ ok: true }, 201, { 'Set-Cookie': await createSession(user.id, 'customer') });
     }
     if (path === 'auth/logout' && method === 'POST') {
       const token = cookieToken(request);
@@ -230,13 +145,45 @@ async function handle(request: Request, context: Context) {
       if (token) await db.authSession.deleteMany({ where: { tokenHash: digest(token) } });
       return json({ ok: true }, 200, { 'Set-Cookie': await createSession(u.id, u.kind) });
     }
-    if (path === 'checkout/quote' && method === 'POST') {
-      const user = await actor(request);
-      await limit(
-        `quote:${user?.id || digest(request.headers.get('x-forwarded-for') || 'local')}`,
-        90,
+    // ---- Menu for the order screen ----
+    if (path === 'menu/categories' && method === 'GET') {
+      const u = await requireActor(request, ORDER_TAKERS);
+      return json(
+        await db.menuCategory.findMany({
+          where: { restaurantId: u.restaurantId, isActive: true },
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+        }),
       );
-      const q = await quote(db, checkoutSchema.parse(await body()), user?.kind === 'staff');
+    }
+    if (path === 'menu/items' && method === 'GET') {
+      const u = await requireActor(request, ORDER_TAKERS);
+      return json(
+        await db.menuItem.findMany({
+          where: { restaurantId: u.restaurantId, category: { isActive: true } },
+          include: {
+            category: true,
+            modifierGroups: {
+              include: { group: { include: { options: { where: { isAvailable: true } } } } },
+            },
+          },
+          orderBy: [{ sortOrder: 'asc' }, { name: 'asc' }],
+          take: 500,
+        }),
+      );
+    }
+    if (path === 'delivery/zones' && method === 'GET') {
+      const u = await requireActor(request, ORDER_TAKERS);
+      return json(
+        await db.deliveryZone.findMany({
+          where: { restaurantId: u.restaurantId, isActive: true },
+          orderBy: { name: 'asc' },
+        }),
+      );
+    }
+    // ---- Taking orders ----
+    if (path === 'orders/quote' && method === 'POST') {
+      const u = await requireActor(request, ORDER_TAKERS);
+      const q = await quote(db, staffOrderSchema.parse(await body()), u.restaurantId);
       return json({
         subtotal: q.subtotal / 100,
         discount: q.discount / 100,
@@ -245,18 +192,14 @@ async function handle(request: Request, context: Context) {
         total: q.total / 100,
       });
     }
-    if ((path === 'orders' || path === 'pos/orders') && method === 'POST') {
-      const user =
-        path === 'pos/orders' ? await requireActor(request, CASHIERS) : await actor(request);
-      await limit(
-        `orders:${user?.id || digest(request.headers.get('x-forwarded-for') || 'local')}`,
-        15,
-      );
+    if (path === 'orders' && method === 'POST') {
+      const u = await requireActor(request, ORDER_TAKERS);
+      await limit(`orders:${u.id}`, 40);
       return json(
         await createOrder(
-          checkoutSchema.parse(await body()),
+          staffOrderSchema.parse(await body()),
           request.headers.get('idempotency-key') || '',
-          user,
+          u,
           request.headers.has('x-expected-total')
             ? Number(request.headers.get('x-expected-total'))
             : undefined,
@@ -264,309 +207,137 @@ async function handle(request: Request, context: Context) {
         201,
       );
     }
-    if (p[0] === 'orders' && p[1] === 'track' && p[2] && method === 'GET') {
-      await limit(`track:${digest(request.headers.get('x-forwarded-for') || 'local')}`, 120);
-      const o = await db.order.findUnique({
-        where: { trackingTokenHash: digest(p[2]) },
+    /** The last delivery to this phone, to fill in the name and address. */
+    if (path === 'customers/lookup' && method === 'GET') {
+      const u = await requireActor(request, ORDER_TAKERS);
+      const phone = z
+        .string()
+        .trim()
+        .regex(/^\+?[\d\s-]{7,20}$/)
+        .parse(url.searchParams.get('phone') || '');
+      const last = await db.order.findFirst({
+        where: { restaurantId: u.restaurantId, guestPhone: phone },
+        orderBy: { createdAt: 'desc' },
+        select: { guestName: true, deliveryAddress: true, zoneId: true, createdAt: true },
+      });
+      const count = last
+        ? await db.order.count({ where: { restaurantId: u.restaurantId, guestPhone: phone } })
+        : 0;
+      return json(last ? { ...last, orderCount: count } : null);
+    }
+    // ---- Orders list (pending / assigned / delivered / cancelled) ----
+    if (path === 'admin/orders' && method === 'GET') {
+      const u = await requireActor(request, ORDER_READERS);
+      const view = url.searchParams.get('view'),
+        take = Math.min(Math.max(Number(url.searchParams.get('limit')) || 100, 1), 300);
+      const where = orderFilters(url, u.restaurantId);
+      const [orders, grouped] = await Promise.all([
+        db.order.findMany({
+          where: {
+            ...where,
+            ...(view
+              ? { status: { in: viewStatuses[z.enum(ORDER_VIEWS).parse(view)] as never[] } }
+              : {}),
+          },
+          include: orderInclude,
+          orderBy: { createdAt: 'desc' },
+          take,
+        }),
+        db.order.groupBy({ by: ['status'], where, _count: { _all: true } }),
+      ]);
+      const counts = Object.fromEntries(ORDER_VIEWS.map((v) => [v, 0])) as Record<
+        OrderView,
+        number
+      >;
+      for (const g of grouped)
+        for (const v of ORDER_VIEWS)
+          if (viewStatuses[v].includes(g.status)) counts[v] += g._count._all;
+      return json({ orders, counts });
+    }
+    if (p[0] === 'admin' && p[1] === 'orders' && p[2] && p.length === 3 && method === 'GET') {
+      const u = await requireActor(request, ORDER_READERS);
+      const o = await db.order.findFirst({
+        where: { id: z.uuid().parse(p[2]), restaurantId: u.restaurantId },
         include: orderInclude,
       });
       ensure(o, 'Order not found', 404);
-      return json(trackingView(o));
+      return json(o);
+    }
+    if (p[0] === 'admin' && p[1] === 'orders' && p[2] && p[3] === 'assign' && method === 'POST') {
+      const u = await requireActor(request, ORDER_TAKERS);
+      const d = z
+        .object({ riderId: z.uuid() })
+        .strict()
+        .parse(await body());
+      return json(await assignRider(z.uuid().parse(p[2]), d.riderId, u));
+    }
+    if (p[0] === 'admin' && p[1] === 'orders' && p[2] && p[3] === 'status' && method === 'PATCH') {
+      const u = await requireActor(request, MANAGERS);
+      const d = z
+        .object({ status: z.literal('CANCELLED') })
+        .strict()
+        .parse(await body());
+      return json(await transitionOrder(z.uuid().parse(p[2]), d.status, u));
     }
     if (
-      p[0] === 'customers' &&
-      p[1] === 'me' &&
-      p[2] === 'orders' &&
-      p[3] &&
-      p[4] === 'track' &&
-      method === 'GET'
+      ['admin', 'rider'].includes(p[0]) &&
+      p[1] === 'orders' &&
+      p[2] &&
+      p[3] === 'complete-delivery' &&
+      method === 'POST'
     ) {
-      const user = await requireActor(request, ['CUSTOMER']);
-      const id = z.uuid().parse(p[3]);
-      const order = await db.order.findFirst({
-        where: { id, customerId: user.id },
-        include: orderInclude,
-      });
-      ensure(order, 'Order not found', 404);
-      return json(trackingView(order));
+      const user = await requireActor(
+        request,
+        p[0] === 'admin' ? ORDER_TAKERS : ['OWNER', 'MANAGER', 'RIDER'],
+      );
+      return json(await completeDelivery(z.uuid().parse(p[2]), await body(), user));
     }
-    if (path === 'customers/me/orders' && method === 'GET') {
-      const u = await requireActor(request, ['CUSTOMER']);
+    if (path === 'rider/orders' && method === 'GET') {
+      const u = await requireActor(request, ['OWNER', 'MANAGER', 'RIDER']);
       return json(
         await db.order.findMany({
-          where: { customerId: u.id },
+          where: {
+            restaurantId: u.restaurantId,
+            ...(u.role === 'RIDER'
+              ? { delivery: { riderId: u.id } }
+              : { delivery: { isNot: null } }),
+            status: { in: ['OUT_FOR_DELIVERY', 'COMPLETED', 'CANCELLED'] },
+          },
           include: orderInclude,
           orderBy: { createdAt: 'desc' },
           take: 100,
         }),
       );
     }
-    if (path === 'customers/me/addresses') {
-      const u = await requireActor(request, ['CUSTOMER']);
-      if (method === 'GET')
-        return json(await db.customerAddress.findMany({ where: { customerId: u.id } }));
-      if (method === 'POST') {
-        const d = z
-          .object({
-            label: z.string().max(80).optional(),
-            district: z.string().min(2).max(100),
-            description: z.string().min(5).max(400),
-            isDefault: z.boolean().default(false),
-          })
-          .strict()
-          .parse(await body());
-        return json(
-          await transaction(async (tx) => {
-            if (d.isDefault)
-              await tx.customerAddress.updateMany({
-                where: { customerId: u.id },
-                data: { isDefault: false },
-              });
-            return tx.customerAddress.create({ data: { ...d, customerId: u.id } });
-          }),
-          201,
-        );
-      }
-    }
-    if (p.slice(0, 3).join('/') === 'customers/me/addresses' && p[3] && method === 'DELETE') {
-      const u = await requireActor(request, ['CUSTOMER']);
-      const deleted = await db.customerAddress.deleteMany({
-        where: { id: p[3], customerId: u.id },
-      });
-      ensure(deleted.count, 'Address not found', 404);
-      return json({ ok: true });
-    }
-    if (path === 'reviews' && method === 'GET') {
-      return json(
-        await db.review
-          .findMany({
-            where: { isPublished: true },
-            select: {
-              id: true,
-              rating: true,
-              comment: true,
-              createdAt: true,
-              customer: { select: { fullName: true } },
-            },
-            take: 12,
-            orderBy: { createdAt: 'desc' },
-          })
-          .then((rows) =>
-            rows.map(({ customer, ...review }) => ({
-              ...review,
-              name: customer?.fullName.split(' ')[0] || 'Customer',
-            })),
-          ),
-      );
-    }
-    if (p[0] === 'admin' && p[1] === 'reviews') {
-      const u = await requireActor(request, MANAGERS);
-      if (method === 'GET')
-        return json(
-          await db.review.findMany({
-            where: { order: { restaurantId: u.restaurantId } },
-            include: {
-              customer: { select: { fullName: true } },
-              order: { select: { orderNumber: true } },
-            },
-            orderBy: { createdAt: 'desc' },
-            take: 200,
-          }),
-        );
-      if (method === 'PATCH' && p[2]) {
-        const d = z
-          .object({ isPublished: z.boolean() })
-          .strict()
-          .parse(await body());
-        const review = await db.review.findFirst({
-          where: { id: p[2], order: { restaurantId: u.restaurantId } },
-        });
-        ensure(review, 'Review not found', 404);
-        return json(
-          await transaction(async (tx) => {
-            const result = await tx.review.update({ where: { id: p[2] }, data: d });
-            await audit(tx, u, 'MODERATE_REVIEW', 'Review', p[2]);
-            return result;
-          }),
-        );
-      }
-    }
-    if (path === 'reviews' && method === 'POST') {
-      const u = await requireActor(request, ['CUSTOMER']);
-      const d = z
-        .object({
-          orderId: z.uuid(),
-          rating: z.number().int().min(1).max(5),
-          comment: z.string().max(1000).optional(),
-        })
-        .strict()
-        .parse(await body());
-      const order = await db.order.findFirst({
-        where: { id: d.orderId, customerId: u.id, status: 'COMPLETED' },
-      });
-      ensure(order, 'Only your completed orders may be reviewed', 403);
-      return json(await db.review.create({ data: { ...d, customerId: u.id } }), 201);
-    }
-    if (path === 'admin/summary' && method === 'GET') {
-      const u = await requireActor(request, FINANCE);
-      return json(await finance(u.restaurantId));
-    }
-    if (
-      (path === 'admin/orders' ||
-        path === 'kitchen/orders' ||
-        path === 'rider/orders' ||
-        path === 'pos/orders') &&
-      method === 'GET'
-    ) {
-      const u = await requireActor(
-        request,
-        path === 'kitchen/orders'
-          ? ['OWNER', 'MANAGER', 'CHEF']
-          : path === 'rider/orders'
-            ? ['OWNER', 'MANAGER', 'RIDER']
-            : ['OWNER', 'MANAGER', 'CASHIER', 'ACCOUNTANT'],
-      );
-      const status = url.searchParams.get('status'),
-        take = Math.min(Math.max(Number(url.searchParams.get('limit')) || 100, 1), 200);
-      const rows = await db.order.findMany({
-        where: {
-          restaurantId: u.restaurantId,
-          ...(path === 'kitchen/orders'
-            ? { status: { in: ['CONFIRMED', 'PREPARING', 'READY', 'COMPLETED'] as OrderStatus[] } }
-            : {}),
-          ...(u.role === 'RIDER' ? { delivery: { riderId: u.id } } : {}),
-          ...(status
-            ? {
-                status: z
-                  .enum([
-                    'CREATED',
-                    'AWAITING_PAYMENT',
-                    'PENDING_APPROVAL',
-                    'CONFIRMED',
-                    'PREPARING',
-                    'READY',
-                    'OUT_FOR_DELIVERY',
-                    'COMPLETED',
-                    'CANCELLED',
-                    'REJECTED',
-                  ])
-                  .parse(status),
-              }
-            : {}),
-        },
-        include: orderInclude,
-        orderBy: { createdAt: 'desc' },
-        take,
-      });
-      return json(
-        u.role === 'CHEF'
-          ? rows.map((o) => ({
-              id: o.id,
-              orderNumber: o.orderNumber,
-              type: o.type,
-              status: o.status,
-              createdAt: o.createdAt,
-              notes: o.notes,
-              items: o.items,
-              table: o.table,
-            }))
-          : rows,
-      );
-    }
-    if (p[0] === 'admin' && p[1] === 'orders' && p[2] && p.length === 3 && method === 'GET') {
-      const u = await requireActor(request, ['OWNER', 'MANAGER', 'CASHIER', 'ACCOUNTANT']);
-      const o = await db.order.findFirst({
-        where: { id: p[2], restaurantId: u.restaurantId },
-        include: orderInclude,
-      });
-      ensure(o, 'Order not found', 404);
-      return json(o);
-    }
-    if (
-      ['admin', 'kitchen', 'rider'].includes(p[0]) &&
-      p[1] === 'orders' &&
-      p[2] &&
-      p[3] === 'status' &&
-      method === 'PATCH'
-    ) {
-      const u = await requireActor(request, ['OWNER', 'MANAGER', 'CASHIER', 'CHEF', 'RIDER']);
-      const d = z
-        .object({
-          status: z.enum([
-            'CONFIRMED',
-            'PREPARING',
-            'READY',
-            'OUT_FOR_DELIVERY',
-            'COMPLETED',
-            'CANCELLED',
-            'REJECTED',
-          ]),
-          proofNote: z.string().trim().min(3).max(500).optional(),
-        })
-        .strict()
-        .parse(await body());
-      return json(await transitionOrder(p[2], d.status, u, d.proofNote));
-    }
-    if (p[0] === 'admin' && p[1] === 'resources' && isResource(p[2])) {
-      const name = p[2],
-        u = await requireActor(
-          request,
-          name === 'expenses' || (method === 'GET' && ['suppliers', 'inventory'].includes(name))
-            ? FINANCE
-            : name === 'tables'
-              ? ['OWNER', 'MANAGER', 'CASHIER']
-              : MANAGERS,
-        );
-      if (method === 'GET') return json(await listResource(name, u));
-      if (method === 'POST' || method === 'PATCH') {
-        if (name === 'tables' && u.role === 'CASHIER') {
-          const d = z
-            .object({ status: z.enum(['AVAILABLE', 'OCCUPIED', 'RESERVED']) })
-            .strict()
-            .parse(await body());
-          ensure(p[3], 'Table ID required');
-          return json(await saveResource(name, d, u, p[3]));
-        }
-        return json(await saveResource(name, await body(), u, p[3]), method === 'POST' ? 201 : 200);
-      }
-      if (method === 'DELETE') {
-        ensure(u.role === 'OWNER' || u.role === 'MANAGER', 'Permission denied', 403);
-        ensure(name !== 'staff', 'Suspend staff instead of deleting', 400);
-        ensure(p[3], 'ID required');
-        return json(
-          await transaction(async (tx) => {
-            const model = delegate(tx, name);
-            const row = await model.findFirst({
-              where: { id: p[3], restaurantId: u.restaurantId },
-            });
-            ensure(row, 'Resource not found', 404);
-            await model.delete({ where: { id: p[3] } });
-            await audit(tx, u, 'DELETE', name, p[3]);
-            if (name === 'menu' || name === 'categories') await queueMenuSync(tx, u.restaurantId);
-            return { ok: true };
-          }),
-        );
-      }
-    }
-    if (path === 'admin/customers' && method === 'GET') {
-      const u = await requireActor(request, MANAGERS);
-      return json(
-        await db.customer.findMany({
-          where: { restaurantId: u.restaurantId },
-          select: {
-            id: true,
-            fullName: true,
-            phone: true,
-            email: true,
-            createdAt: true,
-            _count: { select: { orders: true } },
-          },
-          take: 200,
+    // ---- Riders ----
+    if (path === 'admin/delivery/riders' && method === 'GET') {
+      const u = await requireActor(request, ORDER_TAKERS);
+      const [riders, busy] = await Promise.all([
+        db.staffUser.findMany({
+          where: { restaurantId: u.restaurantId, role: 'RIDER', status: 'ACTIVE' },
+          select: { id: true, fullName: true, phone: true, email: true },
+          orderBy: { fullName: 'asc' },
         }),
+        db.delivery.groupBy({
+          by: ['riderId'],
+          where: { order: { restaurantId: u.restaurantId, status: 'OUT_FOR_DELIVERY' } },
+          _count: { _all: true },
+        }),
+      ]);
+      return json(
+        riders.map((r) => ({
+          ...r,
+          activeOrders: busy.find((b) => b.riderId === r.id)?._count._all || 0,
+        })),
       );
     }
+    if (path === 'admin/delivery/riders' && method === 'POST') {
+      const user = await requireActor(request, MANAGERS);
+      return json(await createRider(await body(), user), 201);
+    }
+    // ---- Payments ----
     if (path === 'admin/payments' && method === 'GET') {
-      const u = await requireActor(request, [...FINANCE, 'CASHIER']);
+      const u = await requireActor(request, [...FINANCE, 'OPERATOR']);
       return json(
         await db.payment.findMany({
           where: { order: { restaurantId: u.restaurantId } },
@@ -580,12 +351,8 @@ async function handle(request: Request, context: Context) {
       );
     }
     if (p[0] === 'payments' && p[1] && p[2] === 'capture' && method === 'POST') {
-      const u = await requireActor(request, [...CASHIERS, 'RIDER']);
-      const d = z
-        .object({ amount: z.number().positive().optional() })
-        .strict()
-        .parse(await body());
-      return json(await capturePayment(p[1], u, d.amount));
+      const u = await requireActor(request, [...ORDER_TAKERS, 'RIDER']);
+      return json(await capturePayment(z.uuid().parse(p[1]), u, captureSchema.parse(await body())));
     }
     if (p[0] === 'payments' && p[1] && p[2] === 'refund' && method === 'POST') {
       const u = await requireActor(request, FINANCE);
@@ -593,35 +360,112 @@ async function handle(request: Request, context: Context) {
         await refundPayment(p[1], await body(), request.headers.get('idempotency-key') || '', u),
       );
     }
-    if (p[0] === 'payments' && p[1] && p[2] === 'initialize')
-      throw new AppError(
-        501,
-        'Online payment provider is not configured. Cash payment is available.',
-      );
-    if (path === 'webhooks/daljirconnect' && method === 'POST') {
-      ensure(
-        Number(request.headers.get('content-length') || 0) <= 262144,
-        'Request too large',
-        413,
-      );
-      const raw = await request.text();
-      ensure(raw.length <= 262144, 'Request too large', 413);
-      return json(await handleWebhook(raw, request.headers.get('x-daljirconnect-signature')));
+    if (p[0] === 'payments' && p[1] && p[2] === 'initialize' && method === 'POST') {
+      const u = await requireActor(request, ORDER_TAKERS);
+      const payment = await db.payment.findFirst({
+        where: { id: z.uuid().parse(p[1]), order: { restaurantId: u.restaurantId } },
+        include: { order: true },
+      });
+      ensure(payment, 'Payment not found', 404);
+      ensure(['PENDING', 'UNPAID'].includes(payment.status), 'Payment is not open', 409);
+      ensure(payment.providerReference, 'Geli telefoonka lacag bixiyaha');
+      const result = await requireProvider(payment.method).initiate({
+        paymentId: payment.id,
+        orderNumber: payment.order.orderNumber,
+        amountCents: Math.round(Number(payment.amount) * 100),
+        payerPhone: payment.providerReference,
+      });
+      await transaction(async (tx) => {
+        await tx.payment.update({
+          where: { id: payment.id },
+          data: {
+            provider: payment.method,
+            providerTransactionId: result.providerTransactionId,
+            status: 'PENDING',
+          },
+        });
+        await audit(tx, u, 'PAYMENT_INITIATE', 'Payment', payment.id, { method: payment.method });
+      });
+      return json({ ok: true, status: 'PENDING' });
     }
-    if (path === 'admin/integrations/daljirconnect' && method === 'GET') {
-      const u = await requireActor(request, MANAGERS);
-      return json(await integrationStatus(u.restaurantId, url.origin));
+    if (p[0] === 'webhooks' && p[1] === 'payments' && p[2] && method === 'POST') {
+      // Throws 501 until a provider is implemented and configured (see lib/payments.ts).
+      const provider = requireProvider(p[2].toUpperCase());
+      ensure(Number(request.headers.get('content-length') || 0) <= 65536, 'Request too large', 413);
+      const verified = await provider.verifyCallback(await request.text(), request.headers);
+      await transaction(async (tx) => {
+        const payment = await tx.payment.findUnique({
+          where: { providerTransactionId: verified.providerTransactionId },
+        });
+        ensure(payment && payment.method === provider.method, 'Payment not found', 404);
+        if (payment.status !== 'PENDING') return;
+        if (verified.status === 'FAILED') {
+          await tx.payment.update({ where: { id: payment.id }, data: { status: 'FAILED' } });
+          return;
+        }
+        ensure(
+          verified.amountCents === Math.round(Number(payment.amount) * 100),
+          'Amount mismatch',
+          409,
+        );
+        await tx.payment.update({
+          where: { id: payment.id },
+          data: { status: 'PAID', paidAt: new Date() },
+        });
+        const paid = await tx.payment.findMany({
+          where: { orderId: payment.orderId, paidAt: { not: null } },
+        });
+        const order = await tx.order.findUniqueOrThrow({ where: { id: payment.orderId } });
+        const captured = paid.reduce((s, x) => s + Math.round(Number(x.amount) * 100), 0);
+        await tx.order.update({
+          where: { id: payment.orderId },
+          data: {
+            paymentStatus:
+              captured >= Math.round(Number(order.total) * 100)
+                ? 'PAID'
+                : captured
+                  ? 'PENDING'
+                  : 'UNPAID',
+          },
+        });
+      });
+      return json({ ok: true });
     }
-    if (path === 'admin/integrations/daljirconnect/sync' && method === 'POST') {
-      const u = await requireActor(request, MANAGERS);
-      const result = await syncMenuNow(u.restaurantId);
-      return json({ ...result, status: await integrationStatus(u.restaurantId, url.origin) });
+    if (p[0] === 'webhooks') throw new AppError(404, 'Endpoint not found');
+    // ---- Reports, menu admin, pantry, purchasing ----
+    if (path === 'admin/summary' && method === 'GET') {
+      const u = await requireActor(request, FINANCE);
+      return json(await finance(u.restaurantId));
     }
-    if (p[0] === 'webhooks')
-      throw new AppError(
-        503,
-        'Payment webhooks disabled until a verified provider adapter and signature configuration are installed',
-      );
+    if (p[0] === 'admin' && p[1] === 'resources' && isResource(p[2])) {
+      const name = p[2],
+        u = await requireActor(
+          request,
+          name === 'expenses' || (method === 'GET' && ['suppliers', 'inventory'].includes(name))
+            ? FINANCE
+            : MANAGERS,
+        );
+      if (method === 'GET') return json(await listResource(name, u));
+      if (method === 'POST' || method === 'PATCH')
+        return json(await saveResource(name, await body(), u, p[3]), method === 'POST' ? 201 : 200);
+      if (method === 'DELETE') {
+        ensure(u.role === 'OWNER' || u.role === 'MANAGER', 'Permission denied', 403);
+        ensure(name !== 'staff', 'Suspend staff instead of deleting', 400);
+        ensure(p[3], 'ID required');
+        return json(
+          await transaction(async (tx) => {
+            const model = delegate(tx, name);
+            const row = await model.findFirst({
+              where: { id: p[3], restaurantId: u.restaurantId },
+            });
+            ensure(row, 'Resource not found', 404);
+            await model.delete({ where: { id: p[3] } });
+            await audit(tx, u, 'DELETE', name, p[3]);
+            return { ok: true };
+          }),
+        );
+      }
+    }
     if (path === 'admin/inventory/movements') {
       const u = await requireActor(request, MANAGERS);
       if (method === 'POST') return json(await stockMovement(await body(), u), 201);
@@ -732,145 +576,6 @@ async function handle(request: Request, context: Context) {
         }),
       );
     }
-    if (path === 'admin/delivery/riders' && method === 'POST') {
-      const user = await requireActor(request, MANAGERS);
-      return json(await createRider(await body(), user), 201);
-    }
-    if (
-      ['admin', 'rider'].includes(p[0]) &&
-      p[1] === 'orders' &&
-      p[2] &&
-      p[3] === 'complete-delivery' &&
-      method === 'POST'
-    ) {
-      const user = await requireActor(
-        request,
-        p[0] === 'admin' ? MANAGERS : ['OWNER', 'MANAGER', 'RIDER'],
-      );
-      return json(await completeDelivery(z.uuid().parse(p[2]), await body(), user));
-    }
-    if (path === 'admin/delivery/riders' && method === 'GET') {
-      const u = await requireActor(request, MANAGERS);
-      return json(
-        await db.staffUser.findMany({
-          where: { restaurantId: u.restaurantId, role: 'RIDER', status: 'ACTIVE' },
-          select: { id: true, fullName: true, phone: true, email: true },
-        }),
-      );
-    }
-    if (path === 'admin/deliveries' && method === 'GET') {
-      const u = await requireActor(request, MANAGERS);
-      return json(
-        await db.delivery.findMany({
-          where: { order: { restaurantId: u.restaurantId } },
-          include: {
-            order: {
-              select: { orderNumber: true, guestName: true, deliveryAddress: true, status: true },
-            },
-            rider: { select: { fullName: true } },
-          },
-          take: 200,
-        }),
-      );
-    }
-    if (p[0] === 'admin' && p[1] === 'deliveries' && p[2] && method === 'PATCH') {
-      const u = await requireActor(request, MANAGERS),
-        d = z
-          .object({ riderId: z.uuid() })
-          .strict()
-          .parse(await body());
-      return json(
-        await transaction(async (tx) => {
-          const delivery = await tx.delivery.findFirst({
-            where: { id: p[2], order: { restaurantId: u.restaurantId } },
-          });
-          ensure(
-            delivery && ['PENDING', 'ASSIGNED'].includes(delivery.status),
-            'Delivery cannot be assigned',
-            409,
-          );
-          ensure(
-            await tx.staffUser.findFirst({
-              where: {
-                id: d.riderId,
-                restaurantId: u.restaurantId,
-                role: 'RIDER',
-                status: 'ACTIVE',
-              },
-            }),
-            'Rider not found',
-          );
-          const result = await tx.delivery.update({
-            where: { id: p[2] },
-            data: { riderId: d.riderId, status: 'ASSIGNED', assignedAt: new Date() },
-            include: { order: { select: { externalRef: true, channel: true } } },
-          });
-          await audit(tx, u, 'ASSIGN_RIDER', 'Delivery', p[2]);
-          // A WhatsApp order: the customer gets the rider's name and phone.
-          if (result.order.channel === 'WHATSAPP' && result.order.externalRef)
-            await queueOrderSync(tx, u.restaurantId, result.order.externalRef);
-          return result;
-        }),
-      );
-    }
-    if (p[0] === 'tables' && p[1] && method === 'GET') {
-      const table = await db.diningTable.findUnique({
-        where: { qrToken: p[1] },
-        select: { tableNumber: true, status: true },
-      });
-      ensure(table && table.status !== 'DISABLED', 'Table not found', 404);
-      return json({ tableNumber: table.tableNumber });
-    }
-    if (p[0] === 'pos' && p[1] === 'tables' && p[2] && p[3] === 'qr' && method === 'GET') {
-      const u = await requireActor(request, CASHIERS);
-      const table = await db.diningTable.findFirst({
-        where: { id: p[2], restaurantId: u.restaurantId },
-      });
-      ensure(table, 'Table not found', 404);
-      const origin = process.env.NEXT_PUBLIC_APP_URL || new URL(request.url).origin;
-      const svg = await QRCode.toString(origin + '/menu?table=' + table.qrToken, {
-        type: 'svg',
-        margin: 2,
-        color: { dark: '#153B30', light: '#FFF9EE' },
-      });
-      return new Response(svg, {
-        headers: { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'private, no-store' },
-      });
-    }
-    if (path === 'pos/tables' && method === 'GET') {
-      const u = await requireActor(request, CASHIERS);
-      return json(
-        await db.diningTable.findMany({
-          where: { restaurantId: u.restaurantId },
-          include: {
-            orders: {
-              where: { status: { notIn: ['COMPLETED', 'CANCELLED', 'REJECTED'] } },
-              select: { id: true, orderNumber: true, total: true },
-            },
-          },
-        }),
-      );
-    }
-    if (path === 'pos/shifts') {
-      const u = await requireActor(request, CASHIERS);
-      if (method === 'GET')
-        return json(
-          await db.cashierShift.findMany({
-            where: {
-              restaurantId: u.restaurantId,
-              ...(u.role === 'CASHIER' ? { cashierId: u.id } : {}),
-            },
-            include: { cashier: { select: { fullName: true } } },
-            orderBy: { openedAt: 'desc' },
-            take: 100,
-          }),
-        );
-      if (method === 'POST') return json(await openShift(await body(), u), 201);
-    }
-    if (p[0] === 'pos' && p[1] === 'shifts' && p[2] && p[3] === 'close' && method === 'POST') {
-      const u = await requireActor(request, CASHIERS);
-      return json(await closeShift(p[2], await body(), u));
-    }
     if (path === 'admin/audit-logs' && method === 'GET') {
       const u = await requireActor(request, MANAGERS);
       return json(
@@ -901,12 +606,6 @@ async function handle(request: Request, context: Context) {
           address: z.string().max(300).optional(),
           isAcceptingOrders: z.boolean().optional(),
           taxRate: z.number().min(0).max(100).optional(),
-          minimumOrder: z.number().min(0).max(10000).optional(),
-          averagePrepMinutes: z.number().int().min(1).max(240).optional(),
-          deliveryEnabled: z.boolean().optional(),
-          pickupEnabled: z.boolean().optional(),
-          dineInEnabled: z.boolean().optional(),
-          guestCheckoutEnabled: z.boolean().optional(),
           hours: z
             .array(
               z.object({
@@ -958,7 +657,7 @@ async function handle(request: Request, context: Context) {
         'Unauthorized',
         401,
       );
-      return json({ ...(await processOutbox()), daljirconnect: await drainDaljir(100) });
+      return json(await processOutbox());
     }
     throw new AppError(404, 'Endpoint not found');
   } catch (error) {

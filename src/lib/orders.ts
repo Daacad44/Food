@@ -6,11 +6,10 @@ import {
   canTransition,
   decimal,
   money,
-  restaurantOpen,
-  type CheckoutInput,
+  percentDiscount,
+  type StaffOrderInput,
 } from './domain';
-import { digest, trackingToken, type Actor } from './security';
-import { queueOrderSync } from './daljir-queue';
+import { digest, trackingToken, ORDER_TAKERS, type Actor } from './security';
 type Tx = Prisma.TransactionClient;
 export async function transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -36,38 +35,12 @@ export async function restaurant(tx: Tx = db) {
   ensure(r, 'Restaurant setup incomplete', 503);
   return r;
 }
-export interface QuoteOptions {
-  /** Orders from chat (DaljirConnect) can't pick modifier options: required choices are left to the staff. */
-  skipRequiredModifiers?: boolean;
-}
-export async function quote(tx: Tx, input: CheckoutInput, staff = false, opts: QuoteOptions = {}) {
+/** Server-side pricing of a staff order. Every amount is in integer cents. */
+export async function quote(tx: Tx, input: StaffOrderInput, restaurantId?: string) {
   const r = await restaurant(tx),
     settings = r.settings;
+  ensure(!restaurantId || r.id === restaurantId, 'Restaurant not found', 404);
   ensure(settings && r.isAcceptingOrders, 'Maqaayaddu hadda dalab ma qaadanayso', 409);
-  ensure(staff || restaurantOpen(r.hours, r.timezone), 'Maqaayaddu hadda way xiran tahay', 409);
-  ensure(
-    input.type !== 'DINE_IN' || staff || input.tableToken,
-    'Scan the table QR code for dine-in ordering',
-    403,
-  );
-  ensure(staff || !input.tableId, 'A valid table QR code is required', 403);
-  let table = null;
-  if (input.type === 'DINE_IN' && (input.tableId || input.tableToken)) {
-    table = await tx.diningTable.findFirst({
-      where: {
-        restaurantId: r.id,
-        ...(input.tableToken ? { qrToken: input.tableToken } : { id: input.tableId }),
-        status: { not: 'DISABLED' },
-      },
-    });
-    ensure(table, 'Table unavailable', 409);
-  }
-  ensure(
-    (input.type === 'DELIVERY' && settings.deliveryEnabled) ||
-      (input.type === 'PICKUP' && settings.pickupEnabled) ||
-      (input.type === 'DINE_IN' && settings.dineInEnabled),
-    'Order type unavailable',
-  );
   const rows = [];
   for (const line of input.items) {
     const item = await tx.menuItem.findUnique({
@@ -95,12 +68,10 @@ export async function quote(tx: Tx, input: CheckoutInput, staff = false, opts: Q
     });
     for (const { group } of item.modifierGroups) {
       const n = options.filter((o) => o.groupId === group.id).length;
-      const min = opts.skipRequiredModifiers
-        ? 0
-        : Math.max(group.minSelect, group.isRequired ? 1 : 0);
+      const min = Math.max(group.minSelect, group.isRequired ? 1 : 0);
       ensure(
         n >= min && n <= group.maxSelect,
-        `Doorashada ${group.name}: ${group.minSelect}–${group.maxSelect}`,
+        `${item.name} · ${group.name}: dooro ${min}–${group.maxSelect}`,
       );
     }
     const unitPrice = money(item.basePrice),
@@ -123,83 +94,54 @@ export async function quote(tx: Tx, input: CheckoutInput, staff = false, opts: Q
       needs.set(recipe.inventoryItemId, required);
       ensure(
         recipe.inventoryItem.isActive && Number(recipe.inventoryItem.quantityOnHand) >= required,
-        'Stock kuma filna dalabkan',
+        `Stock kuma filna: ${recipe.inventoryItem.name}`,
         409,
       );
     }
-  let fee = 0,
-    zone = null;
-  if (input.type === 'DELIVERY') {
-    ensure(
-      input.zoneId && input.deliveryAddress && input.deliveryAddress.length >= 5,
-      'Dooro delivery zone iyo cinwaan',
-    );
+  let zone = null;
+  if (input.zoneId) {
     zone = await tx.deliveryZone.findUnique({ where: { id: input.zoneId } });
     ensure(zone?.isActive && zone.restaurantId === r.id, 'Delivery zone unavailable');
-    fee = money(zone.deliveryFee);
   }
-  if (input.tableId) {
-    const table = await tx.diningTable.findUnique({ where: { id: input.tableId } });
-    ensure(table && table.restaurantId === r.id && table.status !== 'DISABLED', 'Invalid table');
-  }
+  const fee =
+    input.deliveryFee !== undefined ? money(input.deliveryFee) : zone ? money(zone.deliveryFee) : 0;
   const subtotal = rows.reduce((sum, row) => sum + row.lineTotal, 0);
-  ensure(
-    subtotal >= money(settings.minimumOrder) && (!zone || subtotal >= money(zone.minimumOrder)),
-    'Dalabku kama gaarin qiimaha ugu yar',
-  );
-  let discount = 0,
-    coupon = null;
-  if (input.couponCode) {
-    coupon = await tx.coupon.findUnique({
-      where: { restaurantId_code: { restaurantId: r.id, code: input.couponCode.toUpperCase() } },
-    });
-    const now = new Date();
-    ensure(
-      coupon?.isActive &&
-        (!coupon.startsAt || coupon.startsAt <= now) &&
-        (!coupon.endsAt || coupon.endsAt > now) &&
-        (coupon.usageLimit === null || coupon.usedCount < coupon.usageLimit) &&
-        subtotal >= money(coupon.minSpend),
-      'Coupon aan shaqaynayn',
-    );
-    discount =
-      coupon.type === 'FIXED'
-        ? money(coupon.value)
-        : Math.round((subtotal * Number(coupon.value)) / 100);
-    if (coupon.maxDiscount) discount = Math.min(discount, money(coupon.maxDiscount));
-    discount = Math.min(discount, subtotal);
-  }
   return {
     restaurant: r,
     rows,
-    coupon,
     zone,
-    table,
-    ...calculateTotals(subtotal, discount, Number(settings.taxRate), fee),
+    ...calculateTotals(
+      subtotal,
+      percentDiscount(subtotal, input.discountPercent),
+      input.withVat ? Number(settings.taxRate) : 0,
+      fee,
+    ),
   };
 }
-export interface OrderSource {
-  /** e.g. WHATSAPP */
-  channel: string;
-  /** the order's id in the source system (DaljirConnect) */
-  externalRef: string;
-}
+export const orderNumber = (keyHash: string) =>
+  `BTN-${Date.now().toString(36).toUpperCase()}-${keyHash.slice(0, 4).toUpperCase()}`;
+/**
+ * A staff member takes a delivery order. It is confirmed at once (stock is deducted), the payment
+ * method and payer's number are recorded, and when a rider is chosen the order goes straight out.
+ */
 export async function createOrder(
-  input: CheckoutInput,
+  input: StaffOrderInput,
   key: string,
-  user: Actor | null,
+  user: Actor,
   expectedTotal?: number,
-  source?: OrderSource,
 ) {
-  if (user?.kind === 'staff')
-    ensure(
-      ['OWNER', 'MANAGER', 'CASHIER'].includes(user.role),
-      'Only cashiers and managers can place staff orders',
-      403,
-    );
+  ensure(
+    user.kind === 'staff' && (ORDER_TAKERS as readonly string[]).includes(user.role),
+    'Ma lihid oggolaanshaha dalab qaadista',
+    403,
+  );
   ensure(key.length >= 16 && key.length <= 120, 'Idempotency-Key required');
+  ensure(
+    input.paymentMethod === 'CASH' || input.paymentPhone,
+    'Geli telefoonka lacagta laga soo diray',
+  );
   const keyHash = digest(key),
-    requestHash = digest(JSON.stringify(input) + (user?.id || 'guest')),
+    requestHash = digest(JSON.stringify(input) + user.id),
     token = trackingToken(key);
   return transaction(async (tx) => {
     const old = await tx.order.findUnique({ where: { idempotencyKey: keyHash } });
@@ -209,50 +151,38 @@ export async function createOrder(
         'Idempotency key already used for another request',
         409,
       );
-      return { id: old.id, orderNumber: old.orderNumber, token, total: old.total };
+      return { id: old.id, orderNumber: old.orderNumber, total: old.total };
     }
-    // Chat orders were taken by the restaurant's own assistant: opening hours were checked there and the staff
-    // approve every order, so they are quoted like a staff order.
-    const q = await quote(tx, input, user?.kind === 'staff' || Boolean(source), {
-      skipRequiredModifiers: Boolean(source),
-    });
+    const q = await quote(tx, input, user.restaurantId);
     if (expectedTotal !== undefined)
       ensure(
         Number.isFinite(expectedTotal) && money(expectedTotal) === q.total,
-        'Menu pricing changed. Review your total again.',
+        'Qiimaha menu-ga waa is beddelay. Hubi wadarta mar kale.',
         409,
       );
-    ensure(
-      user || source || q.restaurant.settings?.guestCheckoutEnabled,
-      'Guest checkout unavailable',
-      403,
-    );
+    const paid = input.paid || q.total === 0;
     const order = await tx.order.create({
       data: {
         restaurantId: q.restaurant.id,
-        orderNumber: `BTN-${Date.now().toString(36).toUpperCase()}-${keyHash.slice(0, 4).toUpperCase()}`,
+        orderNumber: orderNumber(keyHash),
         idempotencyKey: keyHash,
         requestHash,
         trackingTokenHash: digest(token),
-        customerId: user?.kind === 'customer' ? user.id : null,
-        guestName: input.guestName,
-        guestPhone: input.guestPhone,
-        type: input.type,
-        status: 'PENDING_APPROVAL',
-        paymentStatus: q.total === 0 ? 'PAID' : 'UNPAID',
+        guestName: input.customerName || 'Macmiil',
+        guestPhone: input.customerPhone,
+        type: 'DELIVERY',
+        status: 'CONFIRMED',
+        confirmedAt: new Date(),
+        paymentStatus: paid ? 'PAID' : 'UNPAID',
         subtotal: decimal(q.subtotal),
         discountAmount: decimal(q.discount),
         taxAmount: decimal(q.tax),
         deliveryFee: decimal(q.deliveryFee),
         total: decimal(q.total),
-        deliveryAddress: input.type === 'DELIVERY' ? input.deliveryAddress : null,
+        deliveryAddress: input.deliveryAddress,
         zoneId: q.zone?.id,
-        tableId: q.table?.id,
-        couponId: q.coupon?.id,
         notes: input.notes,
-        channel: source?.channel,
-        externalRef: source?.externalRef,
-        handledById: user?.kind === 'staff' ? user.id : null,
+        handledById: user.id,
         items: {
           create: q.rows.map((row) => ({
             menuItemId: row.item.id,
@@ -271,30 +201,34 @@ export async function createOrder(
             },
           })),
         },
-        statusEvents: { create: { toStatus: 'PENDING_APPROVAL', actorId: user?.id } },
+        statusEvents: { create: { toStatus: 'CONFIRMED', actorId: user.id } },
         payments: {
           create: {
-            method: 'CASH',
-            status: q.total === 0 ? 'PAID' : 'PENDING',
-            ...(q.total === 0 ? { paidAt: new Date() } : {}),
+            method: input.paymentMethod,
+            provider: 'manual',
+            providerReference: input.paymentPhone || null,
+            status: paid ? 'PAID' : 'PENDING',
+            ...(paid ? { paidAt: new Date() } : {}),
             amount: decimal(q.total),
             idempotencyKey: `order:${keyHash}`,
           },
         },
-        ...(input.type === 'DELIVERY' ? { delivery: { create: { status: 'PENDING' } } } : {}),
+        delivery: { create: { status: 'PENDING' } },
       },
     });
-    if (q.coupon)
-      await tx.coupon.update({ where: { id: q.coupon.id }, data: { usedCount: { increment: 1 } } });
-    if (q.table)
-      await tx.diningTable.update({ where: { id: q.table.id }, data: { status: 'OCCUPIED' } });
+    await deductStock(tx, order.id, user);
+    await tx.order.update({ where: { id: order.id }, data: { stockDeducted: true } });
+    await audit(tx, user, 'ORDER_CREATE', 'Order', order.id, {
+      total: decimal(q.total),
+      paymentMethod: input.paymentMethod,
+      paid,
+    });
     await event(tx, q.restaurant.id, 'order.created', {
       orderId: order.id,
       orderNumber: order.orderNumber,
     });
-    // Tell DaljirConnect the order's number here.
-    if (source) await queueOrderSync(tx, q.restaurant.id, source.externalRef);
-    return { id: order.id, orderNumber: order.orderNumber, token, total: order.total };
+    if (input.riderId) await assignRiderInTransaction(tx, order.id, input.riderId, user);
+    return { id: order.id, orderNumber: order.orderNumber, total: order.total };
   });
 }
 export async function event(
@@ -324,6 +258,98 @@ export async function audit(
     },
   });
 }
+/** Takes the recipe quantities of every item out of the pantry, once per order. */
+async function deductStock(tx: Tx, orderId: string, user: Actor) {
+  const items = await tx.orderItem.findMany({ where: { orderId } });
+  for (const item of items) {
+    if (!item.menuItemId) continue;
+    const recipes = await tx.recipeIngredient.findMany({
+      where: { menuItemId: item.menuItemId },
+      include: { inventoryItem: true },
+    });
+    for (const recipe of recipes) {
+      const quantity = Number(recipe.quantity) * item.quantity;
+      const updated = await tx.inventoryItem.updateMany({
+        where: { id: recipe.inventoryItemId, isActive: true, quantityOnHand: { gte: quantity } },
+        data: { quantityOnHand: { decrement: quantity } },
+      });
+      ensure(updated.count === 1, `Stock kuma filna: ${recipe.inventoryItem.name}`, 409);
+      await tx.inventoryMovement.create({
+        data: {
+          inventoryItemId: recipe.inventoryItemId,
+          type: 'CONSUMPTION',
+          unitCost: recipe.inventoryItem.averageUnitCost,
+          quantityDelta: -quantity,
+          referenceType: 'ORDER',
+          referenceId: orderId,
+          actorId: user.id,
+        },
+      });
+    }
+  }
+}
+/** Assigns (or re-assigns) the rider; the order is then out for delivery. */
+export async function assignRider(orderId: string, riderId: string, user: Actor) {
+  return transaction((tx) => assignRiderInTransaction(tx, orderId, riderId, user));
+}
+export async function assignRiderInTransaction(
+  tx: Tx,
+  orderId: string,
+  riderId: string,
+  user: Actor,
+) {
+  ensure((ORDER_TAKERS as readonly string[]).includes(user.role), 'Permission denied', 403);
+  const order = await tx.order.findFirst({
+    where: { id: orderId, restaurantId: user.restaurantId },
+    include: { delivery: true },
+  });
+  ensure(order && order.type === 'DELIVERY', 'Dalabka lama helin', 404);
+  ensure(
+    !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status),
+    'Dalabkan darawal looma qoondeyn karo',
+    409,
+  );
+  ensure(
+    await tx.staffUser.findFirst({
+      where: { id: riderId, restaurantId: user.restaurantId, role: 'RIDER', status: 'ACTIVE' },
+    }),
+    'Darawalka lama helin ama waa la hakiyey',
+    404,
+  );
+  const delivery =
+    order.delivery || (await tx.delivery.create({ data: { orderId, status: 'PENDING' } }));
+  if (delivery.riderId === riderId && order.status === 'OUT_FOR_DELIVERY') return order;
+  await tx.delivery.update({
+    where: { id: delivery.id },
+    data: { riderId, status: 'ASSIGNED', assignedAt: new Date() },
+  });
+  if (!order.stockDeducted) await deductStock(tx, orderId, user);
+  const updated = await tx.order.update({
+    where: { id: orderId },
+    data: {
+      status: 'OUT_FOR_DELIVERY',
+      stockDeducted: true,
+      ...(order.confirmedAt ? {} : { confirmedAt: new Date() }),
+      ...(order.status !== 'OUT_FOR_DELIVERY'
+        ? {
+            statusEvents: {
+              create: { fromStatus: order.status, toStatus: 'OUT_FOR_DELIVERY', actorId: user.id },
+            },
+          }
+        : {}),
+    },
+  });
+  await audit(
+    tx,
+    user,
+    delivery.riderId ? 'REASSIGN_RIDER' : 'ASSIGN_RIDER',
+    'Delivery',
+    delivery.id,
+    { riderId, previousRiderId: delivery.riderId },
+  );
+  await event(tx, user.restaurantId, 'delivery.assigned', { orderId, riderId });
+  return updated;
+}
 export async function transitionOrder(
   id: string,
   to: OrderStatus,
@@ -332,6 +358,7 @@ export async function transitionOrder(
 ) {
   return transaction((tx) => transitionOrderInTransaction(tx, id, to, user, proofNote));
 }
+/** Completion and cancellation. Going out for delivery happens through assignRider. */
 export async function transitionOrderInTransaction(
   tx: Tx,
   id: string,
@@ -339,89 +366,24 @@ export async function transitionOrderInTransaction(
   user: Actor,
   proofNote?: string,
 ) {
+  ensure(to === 'COMPLETED' || to === 'CANCELLED', 'Invalid order status transition', 409);
   const o = await tx.order.findUnique({
     where: { id },
     include: { items: true, delivery: true },
   });
   ensure(o && o.restaurantId === user.restaurantId, 'Order not found', 404);
-  const manualCompletion =
-    ['OWNER', 'MANAGER'].includes(user.role) &&
-    o.type === 'DELIVERY' &&
-    o.status === 'READY' &&
-    to === 'COMPLETED';
-  ensure(
-    canTransition(o.status, to, o.type) || manualCompletion,
-    'Invalid order status transition',
-    409,
-  );
-  if (user.role === 'CHEF')
-    ensure(
-      (o.status === 'CONFIRMED' && to === 'PREPARING') ||
-        (o.status === 'PREPARING' && to === 'READY'),
-      'Kitchen transition denied',
-      403,
-    );
+  ensure(canTransition(o.status, to), 'Invalid order status transition', 409);
   if (user.role === 'RIDER')
     ensure(
-      o.delivery?.riderId === user.id &&
-        ((o.status === 'READY' && to === 'OUT_FOR_DELIVERY') ||
-          (o.status === 'OUT_FOR_DELIVERY' && to === 'COMPLETED')),
+      to === 'COMPLETED' && o.delivery?.riderId === user.id && o.status === 'OUT_FOR_DELIVERY',
       'Delivery transition denied',
       403,
     );
-  if (to === 'OUT_FOR_DELIVERY') {
-    ensure(o.delivery?.riderId, 'Assign a rider first');
-    ensure(
-      await tx.staffUser.findFirst({
-        where: {
-          id: o.delivery.riderId,
-          restaurantId: user.restaurantId,
-          role: 'RIDER',
-          status: 'ACTIVE',
-        },
-      }),
-      'Assigned rider is inactive. Assign an active rider first.',
-      409,
-    );
-  }
-  if (to === 'COMPLETED') {
-    ensure(o.paymentStatus === 'PAID', 'Collect payment before completing the order', 409);
-    if (user.role === 'RIDER')
-      ensure(proofNote && proofNote.trim().length >= 3, 'Delivery confirmation note required');
-  }
-  if (to === 'CONFIRMED' && !o.stockDeducted) {
-    for (const item of o.items) {
-      if (!item.menuItemId) continue;
-      const recipes = await tx.recipeIngredient.findMany({
-        where: { menuItemId: item.menuItemId },
-        include: { inventoryItem: true },
-      });
-      for (const recipe of recipes) {
-        const quantity = Number(recipe.quantity) * item.quantity;
-        const updated = await tx.inventoryItem.updateMany({
-          where: {
-            id: recipe.inventoryItemId,
-            isActive: true,
-            quantityOnHand: { gte: quantity },
-          },
-          data: { quantityOnHand: { decrement: quantity } },
-        });
-        ensure(updated.count === 1, 'Insufficient inventory', 409);
-        await tx.inventoryMovement.create({
-          data: {
-            inventoryItemId: recipe.inventoryItemId,
-            type: 'CONSUMPTION',
-            unitCost: recipe.inventoryItem.averageUnitCost,
-            quantityDelta: -quantity,
-            referenceType: 'ORDER',
-            referenceId: id,
-            actorId: user.id,
-          },
-        });
-      }
-    }
-  }
-  if ((to === 'CANCELLED' || to === 'REJECTED') && o.stockDeducted) {
+  if (to === 'CANCELLED')
+    ensure(['OWNER', 'MANAGER'].includes(user.role), 'Maamulaha kaliya ayaa joojin kara', 403);
+  if (to === 'COMPLETED')
+    ensure(o.paymentStatus === 'PAID', 'Lacagta qaado ka hor intaadan dhammeyn', 409);
+  if (to === 'CANCELLED' && o.stockDeducted) {
     const movements = await tx.inventoryMovement.findMany({
       where: { referenceId: id, referenceType: 'ORDER', type: 'CONSUMPTION' },
     });
@@ -443,47 +405,31 @@ export async function transitionOrderInTransaction(
       });
     }
   }
-  if ((to === 'CANCELLED' || to === 'REJECTED') && o.couponId)
-    await tx.coupon.update({ where: { id: o.couponId }, data: { usedCount: { decrement: 1 } } });
   const updated = await tx.order.update({
     where: { id },
     data: {
       status: to,
-      ...(to === 'CONFIRMED' ? { stockDeducted: true, confirmedAt: new Date() } : {}),
-      ...(['CANCELLED', 'REJECTED'].includes(to)
-        ? { stockDeducted: false, cancelledAt: new Date() }
-        : {}),
+      ...(to === 'CANCELLED' ? { stockDeducted: false, cancelledAt: new Date() } : {}),
       ...(to === 'COMPLETED' ? { completedAt: new Date() } : {}),
       statusEvents: { create: { fromStatus: o.status, toStatus: to, actorId: user.id } },
     },
   });
-  if (o.tableId && ['COMPLETED', 'CANCELLED', 'REJECTED'].includes(to)) {
-    const active = await tx.order.count({
-      where: { tableId: o.tableId, status: { notIn: ['COMPLETED', 'CANCELLED', 'REJECTED'] } },
-    });
-    if (!active)
-      await tx.diningTable.update({ where: { id: o.tableId }, data: { status: 'AVAILABLE' } });
-  }
-  if (o.delivery && to === 'OUT_FOR_DELIVERY')
-    await tx.delivery.update({
-      where: { id: o.delivery.id },
-      data: { status: 'IN_TRANSIT', pickedUpAt: new Date() },
-    });
   if (o.delivery && to === 'COMPLETED')
     await tx.delivery.update({
       where: { id: o.delivery.id },
       data: {
         status: 'DELIVERED',
         deliveredAt: new Date(),
-        proofNote: proofNote || 'Staff confirmed delivery',
+        proofNote: proofNote || 'Shaqaalaha ayaa xaqiijiyey gaarsiinta',
       },
     });
   if (o.delivery && to === 'CANCELLED')
-    await tx.delivery.update({ where: { id: o.delivery.id }, data: { status: 'RETURNED' } });
+    await tx.delivery.update({
+      where: { id: o.delivery.id },
+      data: { status: o.delivery.riderId ? 'RETURNED' : 'FAILED' },
+    });
   await audit(tx, user, 'ORDER_STATUS', 'Order', id, { from: o.status, to });
   await event(tx, o.restaurantId, 'order.status', { orderId: id, status: to });
-  // WhatsApp orders: the customer hears about every step from DaljirConnect.
-  if (o.externalRef) await queueOrderSync(tx, o.restaurantId, o.externalRef);
   return updated;
 }
 export const orderInclude = {
@@ -491,5 +437,5 @@ export const orderInclude = {
   payments: { include: { refunds: true } },
   delivery: { include: { rider: { select: { id: true, fullName: true, phone: true } } } },
   statusEvents: { orderBy: { createdAt: 'asc' as const } },
-  table: true,
+  handledBy: { select: { id: true, fullName: true } },
 } as const;

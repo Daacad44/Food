@@ -1,5 +1,7 @@
 # Botan Restaurant — Single Restaurant Development Blueprint
 
+> **Superseded scope (2 November 2026):** Botan is now a staff-only, delivery-only system — login, order screen, orders board (pending / assigned / delivered), riders, payments and back office. The customer website, kitchen board, POS, tables, shifts, coupons, reviews and the DaljirConnect integration described below were removed. See README.md.
+
 ## Scope
 One restaurant with role-separated customer, admin, kitchen, POS, rider, and finance experiences. Guest checkout supported; one future branch should require an explicit migration rather than an accidental multi-tenant rewrite.
 

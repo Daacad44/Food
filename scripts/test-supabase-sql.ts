@@ -53,8 +53,8 @@ assert.equal(
   10,
 );
 assert.equal(
-  (await client.query('SELECT count(*)::int AS count FROM "DiningTable"')).rows[0].count,
-  8,
+  (await client.query('SELECT count(*)::int AS count FROM "DeliveryZone"')).rows[0].count,
+  5,
 );
 assert.equal(
   (await client.query('SELECT count(*)::int AS count FROM "ModifierOption"')).rows[0].count,
@@ -152,22 +152,32 @@ const order = await (
       items: [
         { menuItemId: burger.id, quantity: 1, modifierOptionIds: [], specialInstructions: '' },
       ],
-      type: 'PICKUP',
-      guestName: 'SQL setup test',
-      guestPhone: '+252610000001',
+      customerName: 'SQL setup test',
+      customerPhone: '+252610000001',
+      deliveryAddress: 'Bakaaro',
+      paymentMethod: 'EVC_PLUS',
+      paymentPhone: '+252610000001',
     },
     { 'idempotency-key': randomUUID() },
   )
 ).json();
-for (const status of ['CONFIRMED', 'PREPARING', 'READY'])
-  await api(`admin/orders/${order.id}/status`, 'PATCH', { status });
+const rider = await (
+  await api('admin/delivery/riders', 'POST', {
+    fullName: 'SQL Rider',
+    email: 'sql-rider@botan.local',
+    password: randomBytes(18).toString('hex'),
+  })
+).json();
+await api(`admin/orders/${order.id}/assign`, 'POST', { riderId: rider.id });
+await api(`admin/orders/${order.id}/complete-delivery`, 'POST', {
+  proofNote: 'Delivered to the door',
+  confirmPaymentCollected: true,
+});
 const details = await (await api('admin/orders/' + order.id)).json();
-await api(`payments/${details.payments[0].id}/capture`, 'POST', {});
-await api(`admin/orders/${order.id}/status`, 'PATCH', { status: 'COMPLETED' });
-const tracked = await (await api('orders/track/' + order.token)).json();
-assert.equal(tracked.status, 'COMPLETED');
-assert.equal(tracked.paymentStatus, 'PAID');
+assert.equal(details.status, 'COMPLETED');
+assert.equal(details.paymentStatus, 'PAID');
+assert.equal(details.payments[0].method, 'EVC_PLUS');
 await db.$disconnect();
 console.log(
-  'SQL SETUP VERIFIED: repeatable schema/seed, preserved existing data, bcrypt staff login, Prisma migration compatibility, menu, checkout, stock, cash capture and tracking. No hosted database was changed.',
+  'SQL SETUP VERIFIED: repeatable schema/seed, preserved existing data, bcrypt staff login, Prisma migration compatibility, menu, staff order, rider assignment, payment capture and delivery. No hosted database was changed.',
 );

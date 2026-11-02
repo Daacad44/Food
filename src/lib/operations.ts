@@ -5,7 +5,7 @@ import { ensure } from './errors';
 import { money, decimal } from './domain';
 import { transaction, audit } from './orders';
 import { digest, type Actor } from './security';
-import { queueOrderSync } from './daljir-queue';
+import { PAYMENT_METHODS } from './domain';
 async function syncPaymentStatus(tx: Prisma.TransactionClient, orderId: string) {
   const order = await tx.order.findUniqueOrThrow({ where: { id: orderId } }),
     payments = await tx.payment.findMany({
@@ -28,18 +28,32 @@ async function syncPaymentStatus(tx: Prisma.TransactionClient, orderId: string) 
           ? 'PENDING'
           : 'UNPAID';
   await tx.order.update({ where: { id: orderId }, data: { paymentStatus: status } });
-  if (order.externalRef && order.paymentStatus !== status)
-    await queueOrderSync(tx, order.restaurantId, order.externalRef);
 }
-export async function capturePayment(id: string, user: Actor, amount?: number) {
-  return transaction((tx) => capturePaymentInTransaction(tx, id, user, amount));
+export const captureSchema = z
+  .object({
+    amount: z.number().positive().optional(),
+    /** How the money arrived, when it differs from what was chosen at order time. */
+    method: z.enum(PAYMENT_METHODS).optional(),
+    /** The payer's number for EVC Plus / ZAAD / SAHAL. */
+    reference: z
+      .string()
+      .trim()
+      .regex(/^\+?[\d\s-]{7,20}$/)
+      .optional(),
+  })
+  .strict();
+export type CaptureInput = z.infer<typeof captureSchema>;
+/** Records money received by hand (cash, or a mobile-money transfer checked on the phone). */
+export async function capturePayment(id: string, user: Actor, input: CaptureInput = {}) {
+  return transaction((tx) => capturePaymentInTransaction(tx, id, user, input));
 }
 export async function capturePaymentInTransaction(
   tx: Prisma.TransactionClient,
   id: string,
   user: Actor,
-  amount?: number,
+  input: CaptureInput = {},
 ) {
+  const amount = input.amount;
   const p = await tx.payment.findUnique({
     where: { id },
     include: { order: { include: { delivery: true } } },
@@ -53,28 +67,39 @@ export async function capturePaymentInTransaction(
     'Payment cannot be captured',
     409,
   );
-  const shift = await tx.cashierShift.findFirst({
-    where: { cashierId: user.id, status: 'OPEN' },
-  });
-  if (user.role === 'CASHIER') ensure(shift, 'Open your cashier shift first', 409);
+  const method = input.method || p.method,
+    reference = input.reference || p.providerReference;
+  ensure(method === 'CASH' || reference, 'Geli telefoonka lacagta laga soo diray');
   const cents = amount === undefined ? money(p.amount) : money(amount);
-  ensure(Number.isFinite(cents) && cents > 0 && cents <= money(p.amount), 'Invalid cash amount');
+  ensure(Number.isFinite(cents) && cents > 0 && cents <= money(p.amount), 'Invalid amount');
   const result = await tx.payment.update({
     where: { id },
-    data: { amount: decimal(cents), status: 'PAID', paidAt: new Date(), shiftId: shift?.id },
+    data: {
+      amount: decimal(cents),
+      method,
+      provider: 'manual',
+      providerReference: method === 'CASH' ? null : reference,
+      status: 'PAID',
+      paidAt: new Date(),
+    },
   });
   if (cents < money(p.amount))
     await tx.payment.create({
       data: {
         orderId: p.orderId,
         amount: decimal(money(p.amount) - cents),
-        method: 'CASH',
+        method,
+        provider: 'manual',
+        providerReference: method === 'CASH' ? null : reference,
         status: 'PENDING',
         idempotencyKey: `remainder:${p.id}`,
       },
     });
   await syncPaymentStatus(tx, p.orderId);
-  await audit(tx, user, 'CASH_CAPTURE', 'Payment', id, { amount: String(result.amount) });
+  await audit(tx, user, 'PAYMENT_CAPTURE', 'Payment', id, {
+    amount: String(result.amount),
+    method,
+  });
   return result;
 }
 export async function refundPayment(id: string, body: unknown, key: string, user: Actor) {
@@ -249,61 +274,6 @@ export async function receivePurchase(id: string, user: Actor) {
     return result;
   });
 }
-export async function openShift(body: unknown, user: Actor) {
-  const data = z
-    .object({ openingCash: z.number().nonnegative().max(1000000) })
-    .strict()
-    .parse(body);
-  return transaction(async (tx) => {
-    ensure(
-      !(await tx.cashierShift.findFirst({ where: { cashierId: user.id, status: 'OPEN' } })),
-      'A shift is already open',
-      409,
-    );
-    return tx.cashierShift.create({
-      data: { restaurantId: user.restaurantId, cashierId: user.id, openingCash: data.openingCash },
-    });
-  });
-}
-export async function closeShift(id: string, body: unknown, user: Actor) {
-  const data = z
-    .object({ actualClosingCash: z.number().nonnegative().max(1000000) })
-    .strict()
-    .parse(body);
-  return transaction(async (tx) => {
-    const shift = await tx.cashierShift.findUnique({ where: { id } });
-    ensure(
-      shift &&
-        shift.restaurantId === user.restaurantId &&
-        (shift.cashierId === user.id || user.role === 'OWNER'),
-      'Shift not found',
-      404,
-    );
-    ensure(shift.status === 'OPEN', 'Shift already closed', 409);
-    const payments = await tx.payment.findMany({
-      where: { shiftId: id, paidAt: { not: null } },
-      include: { refunds: true },
-    });
-    const cash = payments.reduce(
-      (sum, p) => sum + money(p.amount) - p.refunds.reduce((s, r) => s + money(r.amount), 0),
-      money(shift.openingCash),
-    );
-    const result = await tx.cashierShift.update({
-      where: { id },
-      data: {
-        status: 'CLOSED',
-        closedAt: new Date(),
-        expectedCash: decimal(cash),
-        actualClosingCash: data.actualClosingCash,
-      },
-    });
-    await audit(tx, user, 'SHIFT_CLOSE', 'CashierShift', id, {
-      expectedCash: decimal(cash),
-      actualClosingCash: data.actualClosingCash,
-    });
-    return result;
-  });
-}
 export async function finance(restaurantId: string) {
   const [payments, expenses, purchases, orders, stock] = await Promise.all([
     db.payment.findMany({
@@ -341,6 +311,12 @@ export async function finance(restaurantId: string) {
       );
       days[day] = (days[day] || 0) - money(r.amount);
     }
+  const methods: Record<string, number> = {};
+  for (const p of payments)
+    methods[p.method] =
+      (methods[p.method] || 0) +
+      money(p.amount) -
+      p.refunds.reduce((a, r) => a + money(r.amount), 0);
   const top: Record<string, number> = {};
   for (const o of orders.filter((o) => !['CANCELLED', 'REJECTED'].includes(o.status)))
     for (const i of o.items) top[i.nameSnapshot] = (top[i.nameSnapshot] || 0) + i.quantity;
@@ -364,6 +340,7 @@ export async function finance(restaurantId: string) {
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
       .map(([name, quantity]) => ({ name, quantity })),
+    byMethod: Object.entries(methods).map(([method, cents]) => ({ method, amount: cents / 100 })),
     payments: payments.slice(0, 100),
     inventoryCostEstimate: stock.reduce(
       (s, m) => s + -Number(m.quantityDelta) * Number(m.unitCost ?? m.item.averageUnitCost),
@@ -373,13 +350,8 @@ export async function finance(restaurantId: string) {
 }
 export async function processOutbox() {
   return transaction(async (tx) => {
-    // daljir.* events are sent to DaljirConnect by drainDaljir(), not turned into in-app notifications.
     const rows = await tx.outboxEvent.findMany({
-      where: {
-        status: 'PENDING',
-        availableAt: { lte: new Date() },
-        NOT: { topic: { startsWith: 'daljir.' } },
-      },
+      where: { status: 'PENDING', availableAt: { lte: new Date() } },
       take: 100,
       orderBy: { createdAt: 'asc' },
     });

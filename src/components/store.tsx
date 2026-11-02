@@ -40,97 +40,39 @@ export function useData<T = any>(path: string | null, interval = 0) {
   }, [refresh, interval, path]);
   return { data, error, loading, refresh };
 }
-export type CartLine = {
-  key: string;
-  menuItemId: string;
-  name: string;
-  price: number;
-  imageUrl: string;
-  quantity: number;
-  modifierOptionIds: string[];
-  modifierNames: string[];
-  specialInstructions: string;
-};
 type Store = {
-  cart: CartLine[];
-  add: (item: CartLine) => void;
-  quantity: (key: string, n: number) => void;
-  clear: () => void;
   user: any;
+  /** False until the first session check has finished. */
+  ready: boolean;
   refreshUser: () => Promise<void>;
   toast: (text: string) => void;
-  locale: 'so' | 'en';
-  toggleLocale: () => void;
-  tr: (so: string, en: string) => string;
 };
 const Context = createContext<Store>(null!);
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [cart, setCart] = useState<CartLine[]>([]),
+  const [user, setUser] = useState<any>(null),
     [ready, setReady] = useState(false),
-    [user, setUser] = useState<any>(null),
-    [message, setMessage] = useState(''),
-    [locale, setLocale] = useState<'so' | 'en'>('so');
+    [message, setMessage] = useState('');
   const refreshUser = useCallback(async () => {
     try {
       const result = await api('auth/me');
       setUser(result.user);
     } catch {
       setUser(null);
+    } finally {
+      setReady(true);
     }
   }, []);
   useEffect(() => {
-    try {
-      setCart(JSON.parse(localStorage.getItem('botan-cart') || '[]'));
-      setLocale(localStorage.getItem('botan-locale') === 'en' ? 'en' : 'so');
-    } catch {}
-    setReady(true);
     void refreshUser();
   }, [refreshUser]);
-  useEffect(() => {
-    if (ready) localStorage.setItem('botan-cart', JSON.stringify(cart));
-  }, [cart, ready]);
   useEffect(() => {
     if (message) {
       const timer = setTimeout(() => setMessage(''), 4200);
       return () => clearTimeout(timer);
     }
   }, [message]);
-  const add = (item: CartLine) => {
-    setCart((old) => {
-      const existing = old.find((i) => i.key === item.key);
-      return existing
-        ? old.map((i) =>
-            i.key === item.key ? { ...i, quantity: Math.min(30, i.quantity + item.quantity) } : i,
-          )
-        : [...old, item];
-    });
-    setMessage(`${item.name} · ${locale === 'so' ? 'Waa lagu daray' : 'Added to your bag'}`);
-  };
   return (
-    <Context.Provider
-      value={{
-        cart,
-        add,
-        quantity: (key, n) =>
-          setCart((old) =>
-            old
-              .map((i) => (i.key === key ? { ...i, quantity: Math.min(30, n) } : i))
-              .filter((i) => i.quantity > 0),
-          ),
-        clear: () => setCart([]),
-        user,
-        refreshUser,
-        toast: setMessage,
-        locale,
-        toggleLocale: () =>
-          setLocale((old) => {
-            const next = old === 'so' ? 'en' : 'so';
-            localStorage.setItem('botan-locale', next);
-            return next;
-          }),
-        tr: (so, en) => (locale === 'so' ? so : en),
-      }}
-    >
+    <Context.Provider value={{ user, ready, refreshUser, toast: setMessage }}>
       {children}
       {message && (
         <div role="status" className="toast">

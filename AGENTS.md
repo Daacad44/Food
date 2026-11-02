@@ -7,5 +7,5 @@
 - Start local PostgreSQL with `npm run db:local`, then migrate/seed before starting the app. Unique local login credentials are in `.local/login.txt`; do not dump the file into tool output.
 - Tests use an isolated local database. `npm test` refuses to reset remote databases. Run `npm test`, `npm run build`, `npm run test:e2e`, and `npm run typecheck` for changes affecting ordering or authentication.
 - Preserve integer-cent arithmetic at API boundaries and Decimal fields in PostgreSQL. Keep financial writes, order transitions, coupons, stock and outbox in serializable transactions.
-- Enforce role and object ownership in API code. Never expose staff hashes or customer contact information through tracking and kitchen endpoints.
-- Payment integrations fail closed until real provider documentation and credentials are available. Do not simulate successful online payments.
+- Staff-only, delivery-only app: no customer website, kitchen or POS. Enforce roles (OWNER, MANAGER, OPERATOR, RIDER, ACCOUNTANT) and object ownership in API code; riders only see their own orders. Never expose staff password hashes.
+- EVC Plus / ZAAD / SAHAL are recorded manually. Provider automation goes through src/lib/payments.ts and fails closed until real provider documentation and credentials are available. Do not simulate successful online payments.

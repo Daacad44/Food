@@ -1,8 +1,8 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { Check, Plus, Truck, X } from 'lucide-react';
-import { api, useData, useStore } from './store';
-import { formatMoney } from '@/lib/domain';
+import { Check, X } from 'lucide-react';
+import { api, useStore } from './store';
+import { formatMoney, paymentMethodLabel, PAYMENT_METHODS } from '@/lib/domain';
 
 export function NewRiderDialog({
   onClose,
@@ -90,117 +90,71 @@ export function NewRiderDialog({
   );
 }
 
-export function RiderAssignment({
-  order,
-  onUpdated,
-}: {
-  order: any;
-  onUpdated: () => Promise<void>;
-}) {
-  const { user, toast } = useStore();
-  const manager = ['OWNER', 'MANAGER'].includes(user?.role);
-  const {
-    data: riders,
-    error,
-    refresh,
-  } = useData<any[]>(manager && order.type === 'DELIVERY' ? 'admin/delivery/riders' : null);
-  const [selected, setSelected] = useState(order.delivery?.riderId || ''),
-    [adding, setAdding] = useState(false),
+/** Records money received by hand: cash counted, or a mobile-money transfer seen on the phone. */
+export function PaymentCapture({ payment, onDone }: { payment: any; onDone: () => Promise<void> }) {
+  const { toast } = useStore(),
+    [method, setMethod] = useState(payment.method),
+    [reference, setReference] = useState(payment.providerReference || ''),
     [busy, setBusy] = useState(false),
-    [failure, setFailure] = useState('');
-  useEffect(() => {
-    setSelected(order.delivery?.riderId || '');
-  }, [order.delivery?.riderId, order.id]);
-  if (order.type !== 'DELIVERY') return null;
-  const assignable =
-    manager &&
-    order.delivery &&
-    ['PENDING', 'ASSIGNED'].includes(order.delivery.status) &&
-    !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status);
+    [error, setError] = useState('');
   return (
-    <section className="delivery-assignment" aria-label="Darawalka dalabka">
-      <h3>
-        <Truck size={17} /> Darawalka
-      </h3>
-      <p>
-        {order.delivery?.rider?.fullName || 'Weli darawal looma qoondeyn.'}
-        {order.delivery?.rider?.phone && ` · ${order.delivery.rider.phone}`}
-      </p>
-      {assignable && (
-        <>
-          <form
-            onSubmit={async (event) => {
-              event.preventDefault();
-              if (busy) return;
-              setBusy(true);
-              setFailure('');
-              try {
-                await api('admin/deliveries/' + order.delivery.id, {
-                  method: 'PATCH',
-                  body: JSON.stringify({ riderId: selected }),
-                });
-                await onUpdated();
-                toast('Darawalka waa la qoondeeyey');
-              } catch (e) {
-                setFailure((e as Error).message);
-              } finally {
-                setBusy(false);
-              }
-            }}
+    <form
+      className="payment-capture"
+      onSubmit={async (event) => {
+        event.preventDefault();
+        if (busy) return;
+        setBusy(true);
+        setError('');
+        try {
+          await api('payments/' + payment.id + '/capture', {
+            method: 'POST',
+            body: JSON.stringify({
+              method,
+              ...(method !== 'CASH' && reference ? { reference: reference.trim() } : {}),
+            }),
+          });
+          await onDone();
+          toast('Lacagta waa la diiwaangeliyey');
+        } catch (e) {
+          setError((e as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <div className="segmented" role="group" aria-label="Habka lacagta">
+        {PAYMENT_METHODS.map((m) => (
+          <button
+            type="button"
+            key={m}
+            className={method === m ? 'active' : ''}
+            aria-pressed={method === m}
+            onClick={() => setMethod(m)}
           >
-            <label className="field">
-              Dooro darawal
-              <select
-                value={selected}
-                required
-                onChange={(event) => setSelected(event.target.value)}
-              >
-                <option value="">Dooro…</option>
-                {riders?.map((rider) => (
-                  <option key={rider.id} value={rider.id}>
-                    {rider.fullName}
-                    {rider.phone ? ` · ${rider.phone}` : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="row-actions">
-              <button className="button outline" disabled={busy || !selected}>
-                {busy ? 'Sug…' : 'U qoondee darawal'}
-              </button>
-              <button type="button" className="button outline" onClick={() => setAdding(true)}>
-                <Plus size={15} />
-                Ku dar darawal
-              </button>
-            </div>
-          </form>
-          {riders?.length === 0 && (
-            <p className="muted">Darawal firfircoon ma jiro. Riix “Ku dar darawal”.</p>
-          )}
-        </>
+            {paymentMethodLabel[m]}
+          </button>
+        ))}
+      </div>
+      {method !== 'CASH' && (
+        <label className="field">
+          Telefoonka lacagta laga soo diray
+          <input
+            type="tel"
+            required
+            value={reference}
+            onChange={(e) => setReference(e.target.value)}
+          />
+        </label>
       )}
-      {(error || failure) && (
+      {error && (
         <div className="notice" role="alert">
-          {failure || error}
-          {error && (
-            <button type="button" className="text-link" onClick={() => void refresh()}>
-              Mar kale isku day
-            </button>
-          )}
+          {error}
         </div>
       )}
-      {adding && (
-        <NewRiderDialog
-          onClose={() => setAdding(false)}
-          onCreated={async (rider) => {
-            await refresh();
-            setSelected(rider.id);
-            setAdding(false);
-            toast('Darawal cusub waa la kaydiyey. Hadda u qoondee dalabka.');
-          }}
-        />
-      )}
-    </section>
+      <button className="button outline full" disabled={busy}>
+        {busy ? 'Sug…' : `La qaaday · ${formatMoney(payment.amount)}`}
+      </button>
+    </form>
   );
 }
 
@@ -221,11 +175,13 @@ export function DeliveryCompletion({
     .filter((payment: any) => ['PENDING', 'UNPAID'].includes(payment.status))
     .reduce((sum: number, payment: any) => sum + Number(payment.amount), 0);
   const refunded = ['PARTIALLY_REFUNDED', 'REFUNDED'].includes(order.paymentStatus);
-  const unsettledProvider =
-    !paid &&
-    order.payments.some(
-      (payment: any) => ['PENDING', 'UNPAID'].includes(payment.status) && payment.method !== 'CASH',
-    );
+  const methods = [
+    ...new Set(
+      order.payments
+        .filter((payment: any) => ['PENDING', 'UNPAID'].includes(payment.status))
+        .map((payment: any) => paymentMethodLabel[payment.method] || payment.method),
+    ),
+  ].join(' / ');
   return (
     <form
       className="delivery-completion"
@@ -240,7 +196,7 @@ export function DeliveryCompletion({
             method: 'POST',
             body: JSON.stringify({
               proofNote: form.get('proofNote'),
-              confirmCashCollected: form.get('confirmCashCollected') === 'on',
+              confirmPaymentCollected: form.get('confirmPaymentCollected') === 'on',
             }),
           });
           await onCompleted();
@@ -267,10 +223,12 @@ export function DeliveryCompletion({
           placeholder="Tusaale: Macmiilka ayaa cuntada la guddoonsiiyey."
         />
       </label>
-      {!paid && !refunded && !unsettledProvider && (
+      {!paid && !refunded && (
         <label className="check-row cash-confirmation">
-          <input type="checkbox" name="confirmCashCollected" required />
-          <span>Waxaan xaqiijinayaa in {formatMoney(pending)} cash la qaaday.</span>
+          <input type="checkbox" name="confirmPaymentCollected" required />
+          <span>
+            Waxaan xaqiijinayaa in {formatMoney(pending)} ({methods || 'Cash'}) la qaaday.
+          </span>
         </label>
       )}
       {paid && <p className="muted">Lacagta waa la bixiyey. Mar kale lama qaadayo.</p>}
@@ -279,18 +237,12 @@ export function DeliveryCompletion({
           Dalab lacag laga celiyey lama dhammeystiri karo. Hubi payments-ka.
         </div>
       )}
-      {unsettledProvider && (
-        <div className="notice">
-          Lacag-bixinta online-ka waa in la xaqiijiyaa ka hor dhammeystirka. Cash ahaan looma
-          diiwaangelinayo.
-        </div>
-      )}
       {error && (
         <div className="notice" role="alert">
           {error}
         </div>
       )}
-      <button className="button full" disabled={busy || refunded || unsettledProvider}>
+      <button className="button full" disabled={busy || refunded}>
         {busy ? 'Sug…' : 'Xaqiiji in la geeyey'}
         <Check size={16} />
       </button>

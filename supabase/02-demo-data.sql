@@ -18,7 +18,7 @@ BEGIN
   ON CONFLICT (slug) DO NOTHING;
   SELECT id INTO STRICT restaurant_id FROM "Restaurant" WHERE slug='botan';
   INSERT INTO "RestaurantSettings" (id,"restaurantId","taxRate","minimumOrder","averagePrepMinutes","updatedAt")
-  VALUES (gen_random_uuid(),restaurant_id,0,3,25,now()) ON CONFLICT ("restaurantId") DO NOTHING;
+  VALUES (gen_random_uuid(),restaurant_id,5,0,25,now()) ON CONFLICT ("restaurantId") DO NOTHING;
   FOR n IN 0..6 LOOP
     INSERT INTO "OpeningHour" (id,"restaurantId","dayOfWeek","opensAt","closesAt")
     VALUES (gen_random_uuid(),restaurant_id,n,'07:00','23:30') ON CONFLICT ("restaurantId","dayOfWeek") DO NOTHING;
@@ -50,18 +50,10 @@ BEGIN
     VALUES (gen_random_uuid(),restaurant_id,category_id,row.slug,row.name,row.description,row.price,row.image_url,row.featured,row.sort_order,now())
     ON CONFLICT ("restaurantId",slug) DO NOTHING;
   END LOOP;
-  FOR row IN SELECT * FROM (VALUES ('Hodan',2.00,30),('Wadajir',2.50,35),('Waberi',2.00,30),('Hamar Weyne',3.00,40)) AS zones(name,fee,eta) LOOP
+  FOR row IN SELECT * FROM (VALUES ('Hodan',2.00,30),('Wadajir',2.50,35),('Waberi',2.00,30),('Hamar Weyne',3.00,40),('Bakaaro',1.50,25)) AS zones(name,fee,eta) LOOP
     INSERT INTO "DeliveryZone" (id,"restaurantId",name,"deliveryFee","etaMinutes")
     VALUES (gen_random_uuid(),restaurant_id,row.name,row.fee,row.eta) ON CONFLICT ("restaurantId",name) DO NOTHING;
   END LOOP;
-  FOR n IN 1..8 LOOP
-    INSERT INTO "DiningTable" (id,"restaurantId","tableNumber",capacity,"qrToken")
-    VALUES (gen_random_uuid(),restaurant_id,n::text,CASE WHEN n<5 THEN 4 ELSE 6 END,gen_random_uuid()::text)
-    ON CONFLICT ("restaurantId","tableNumber") DO NOTHING;
-  END LOOP;
-  INSERT INTO "Coupon" (id,"restaurantId",code,type,value,"minSpend","maxDiscount","usageLimit")
-  VALUES (gen_random_uuid(),restaurant_id,'BOTAN10','PERCENTAGE',10,10,5,1000)
-  ON CONFLICT ("restaurantId",code) DO NOTHING;
   INSERT INTO "InventoryItem" (id,"restaurantId",name,unit,"quantityOnHand","reorderLevel","averageUnitCost")
   VALUES (gen_random_uuid(),restaurant_id,'Burger patties','PIECE',100,15,2)
   ON CONFLICT ("restaurantId",name) DO NOTHING;

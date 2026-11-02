@@ -45,16 +45,8 @@ export async function actor(request: Request): Promise<Actor | null> {
       restaurantId: user.restaurantId,
     };
   }
-  const customer = await db.customer.findUnique({ where: { id: session.subjectId } });
-  return customer
-    ? {
-        id: customer.id,
-        role: 'CUSTOMER',
-        name: customer.fullName,
-        kind: 'customer',
-        restaurantId: customer.restaurantId,
-      }
-    : null;
+  // Customer accounts were retired with the customer website.
+  return null;
 }
 export async function requireActor(request: Request, roles?: readonly string[]) {
   const user = await actor(request);
@@ -109,4 +101,7 @@ export function constantEqual(a: string, b: string) {
 }
 export const MANAGERS = ['OWNER', 'MANAGER'] as const;
 export const FINANCE = ['OWNER', 'MANAGER', 'ACCOUNTANT'] as const;
-export const CASHIERS = ['OWNER', 'MANAGER', 'CASHIER'] as const;
+/** Staff who take orders, see every order and assign riders. */
+export const ORDER_TAKERS = ['OWNER', 'MANAGER', 'OPERATOR'] as const;
+/** Staff who can read orders (accountants read, never change them). */
+export const ORDER_READERS = ['OWNER', 'MANAGER', 'OPERATOR', 'ACCOUNTANT'] as const;

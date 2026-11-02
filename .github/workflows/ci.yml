@@ -2,7 +2,8 @@ name: Botan checks
 on: [push, pull_request]
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    # Playwright does not support ubuntu-latest (26.04) yet.
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
       PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.local/ms-playwright

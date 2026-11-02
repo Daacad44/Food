@@ -2,13 +2,19 @@ import { describe, it, expect } from 'vitest';
 import {
   calculateTotals,
   canTransition,
-  checkoutSchema,
   decimal,
   money,
-  restaurantOpen,
+  orderView,
+  percentDiscount,
+  staffOrderSchema,
 } from '../src/lib/domain';
+const order = {
+  items: [{ menuItemId: '6f1c4f39-6a2a-4d4c-9f3e-2b1d6c1a0b11', quantity: 1 }],
+  customerPhone: '615442493',
+  deliveryAddress: 'Bakaaro',
+};
 describe('money and lifecycle rules', () => {
-  it('calculates discount before tax using integer cents', () =>
+  it('calculates discount before VAT using integer cents', () =>
     expect(calculateTotals(1000, 100, 5, 200)).toEqual({
       subtotal: 1000,
       discount: 100,
@@ -16,34 +22,40 @@ describe('money and lifecycle rules', () => {
       deliveryFee: 200,
       total: 1145,
     }));
+  it('matches the order screen example: $6 food, 5% VAT, no fee', () =>
+    expect(calculateTotals(600, 0, 5, 0).total).toBe(630));
+  it('applies percentage discounts in cents and never beyond the subtotal', () => {
+    expect(percentDiscount(1999, 10)).toBe(200);
+    expect(percentDiscount(500, 100)).toBe(500);
+  });
   it('rounds currency without trusting floating point line totals', () => {
     expect(money('12.50')).toBe(1250);
     expect(decimal(1250)).toBe('12.50');
   });
-  it('rejects impossible discount totals', () =>
-    expect(() => calculateTotals(100, 101, 0, 0)).toThrow());
-  it('prevents skipped and repeated lifecycle transitions', () => {
-    expect(canTransition('PENDING_APPROVAL', 'COMPLETED', 'DELIVERY')).toBe(false);
-    expect(canTransition('COMPLETED', 'COMPLETED', 'PICKUP')).toBe(false);
-    expect(canTransition('CONFIRMED', 'PREPARING', 'PICKUP')).toBe(true);
+  it('rejects impossible discount totals and fractional cents', () => {
+    expect(() => calculateTotals(100, 101, 0, 0)).toThrow();
+    expect(() => calculateTotals(100, 0, 0, 1.5)).toThrow();
   });
-  it('requires delivery orders to leave with a rider before completion', () => {
-    expect(canTransition('READY', 'COMPLETED', 'DELIVERY')).toBe(false);
-    expect(canTransition('READY', 'OUT_FOR_DELIVERY', 'PICKUP')).toBe(false);
+  it('follows pending → assigned → delivered and never skips back', () => {
+    expect(canTransition('CONFIRMED', 'OUT_FOR_DELIVERY')).toBe(true);
+    expect(canTransition('OUT_FOR_DELIVERY', 'COMPLETED')).toBe(true);
+    expect(canTransition('COMPLETED', 'CANCELLED')).toBe(false);
+    expect(canTransition('CANCELLED', 'OUT_FOR_DELIVERY')).toBe(false);
+    expect(canTransition('OUT_FOR_DELIVERY', 'CONFIRMED')).toBe(false);
   });
-  it('validates restaurant-local opening hours', () => {
-    const hours = [{ dayOfWeek: 3, opensAt: '07:00', closesAt: '23:30', isClosed: false }];
-    expect(restaurantOpen(hours, 'Africa/Mogadishu', new Date('2026-10-21T06:00:00Z'))).toBe(true);
-    expect(restaurantOpen(hours, 'Africa/Mogadishu', new Date('2026-10-21T21:00:00Z'))).toBe(false);
+  it('treats orders from before the kitchen was removed as pending', () => {
+    expect(orderView('PREPARING')).toBe('pending');
+    expect(orderView('READY')).toBe('pending');
+    expect(orderView('OUT_FOR_DELIVERY')).toBe('assigned');
+    expect(orderView('COMPLETED')).toBe('delivered');
+    expect(orderView('REJECTED')).toBe('cancelled');
   });
-  it('supports overnight hours on the following weekday', () =>
-    expect(
-      restaurantOpen(
-        [{ dayOfWeek: 2, opensAt: '22:00', closesAt: '03:00', isClosed: false }],
-        'Africa/Mogadishu',
-        new Date('2026-10-20T23:00:00Z'),
-      ),
-    ).toBe(true));
-  it('rejects client-supplied totals', () =>
-    expect(checkoutSchema.safeParse({ items: [], total: 1 }).success).toBe(false));
+  it('requires a phone and address and rejects client-supplied totals', () => {
+    expect(staffOrderSchema.safeParse(order).success).toBe(true);
+    expect(staffOrderSchema.safeParse({ ...order, total: 1 }).success).toBe(false);
+    expect(staffOrderSchema.safeParse({ ...order, customerPhone: 'abc' }).success).toBe(false);
+    expect(staffOrderSchema.safeParse({ ...order, deliveryAddress: '' }).success).toBe(false);
+    expect(staffOrderSchema.safeParse({ ...order, discountPercent: 101 }).success).toBe(false);
+    expect(staffOrderSchema.safeParse({ ...order, paymentMethod: 'CARD' }).success).toBe(false);
+  });
 });

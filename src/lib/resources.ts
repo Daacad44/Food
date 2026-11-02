@@ -3,7 +3,6 @@ import { db } from './db';
 import { ensure } from './errors';
 import { audit, transaction } from './orders';
 import { passwordHash, type Actor } from './security';
-import { queueDriversSync, queueMenuSync } from './daljir-queue';
 const text = z.string().trim().min(1).max(200),
   id = z.uuid(),
   amount = z.coerce.number().finite().min(0).max(1000000),
@@ -60,11 +59,6 @@ export const resourceSchemas = {
     etaMinutes: z.coerce.number().int().min(1).max(240).default(30),
     isActive: z.boolean().default(true),
   }),
-  tables: z.object({
-    tableNumber: text,
-    capacity: z.coerce.number().int().min(1).max(100),
-    status: z.enum(['AVAILABLE', 'OCCUPIED', 'RESERVED', 'DISABLED']).default('AVAILABLE'),
-  }),
   inventory: z.object({
     name: text,
     sku: optionalText,
@@ -81,17 +75,6 @@ export const resourceSchemas = {
       .nullable()
       .optional(),
     address: optionalText,
-  }),
-  coupons: z.object({
-    code: z.string().regex(/^[A-Z0-9-]{2,40}$/),
-    type: z.enum(['FIXED', 'PERCENTAGE']),
-    value: amount,
-    maxDiscount: amount.nullable().optional(),
-    minSpend: amount.default(0),
-    usageLimit: z.coerce.number().int().min(1).nullable().optional(),
-    startsAt: z.iso.datetime().nullable().optional(),
-    endsAt: z.iso.datetime().nullable().optional(),
-    isActive: z.boolean().default(true),
   }),
   expenses: z.object({
     category: z.enum([
@@ -112,7 +95,7 @@ export const resourceSchemas = {
     fullName: text,
     email: z.email().toLowerCase(),
     phone: optionalText,
-    role: z.enum(['OWNER', 'MANAGER', 'CASHIER', 'CHEF', 'RIDER', 'ACCOUNTANT']),
+    role: z.enum(['OWNER', 'MANAGER', 'OPERATOR', 'RIDER', 'ACCOUNTANT']),
     status: z.enum(['ACTIVE', 'SUSPENDED']).default('ACTIVE'),
     password: z.string().min(12).max(72).optional(),
   }),
@@ -123,10 +106,8 @@ const models = {
   menu: 'menuItem',
   modifiers: 'modifierGroup',
   zones: 'deliveryZone',
-  tables: 'diningTable',
   inventory: 'inventoryItem',
   suppliers: 'supplier',
-  coupons: 'coupon',
   expenses: 'expense',
   staff: 'staffUser',
 } as const;
@@ -186,17 +167,6 @@ export async function saveResource(
       const merged = { ...previous, ...data };
       ensure(merged.minSelect <= merged.maxSelect, 'Minimum exceeds maximum');
     }
-    if (name === 'coupons') {
-      const merged = { ...previous, ...data };
-      ensure(
-        merged.type !== 'PERCENTAGE' || Number(merged.value) <= 100,
-        'Percentage cannot exceed 100',
-      );
-      ensure(
-        !merged.startsAt || !merged.endsAt || new Date(merged.startsAt) < new Date(merged.endsAt),
-        'Invalid coupon dates',
-      );
-    }
     if (data.categoryId)
       ensure(
         await tx.menuCategory.findFirst({
@@ -212,15 +182,6 @@ export async function saveResource(
     if (name === 'staff' && resourceId && (data.passwordHash || data.role || data.status))
       await tx.authSession.deleteMany({ where: { subjectId: resourceId } });
     await audit(tx, user, resourceId ? 'UPDATE' : 'CREATE', name, result.id);
-    // The WhatsApp assistant sells from this menu: send it the change.
-    if (name === 'menu' || name === 'categories' || name === 'modifiers')
-      await queueMenuSync(tx, user.restaurantId);
-    // Riders (name, phone) are sent too: the customer is told who brings the order.
-    if (
-      name === 'staff' &&
-      (result.role === 'RIDER' || data.role || data.status || data.phone || data.fullName)
-    )
-      await queueDriversSync(tx, user.restaurantId);
     const { passwordHash: _password, ...safe } = result;
     return safe;
   });
