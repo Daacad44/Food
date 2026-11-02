@@ -380,7 +380,11 @@ export async function transitionOrderInTransaction(
       403,
     );
   if (to === 'CANCELLED')
-    ensure(['OWNER', 'MANAGER'].includes(user.role), 'Maamulaha kaliya ayaa joojin kara', 403);
+    ensure(
+      (ORDER_TAKERS as readonly string[]).includes(user.role),
+      'Cashier, maamule ama milkiile kaliya ayaa joojin kara',
+      403,
+    );
   if (to === 'COMPLETED')
     ensure(o.paymentStatus === 'PAID', 'Lacagta qaado ka hor intaadan dhammeyn', 409);
   if (to === 'CANCELLED' && o.stockDeducted) {

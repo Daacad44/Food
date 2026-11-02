@@ -1068,6 +1068,26 @@ CREATE INDEX "AuthSession_subjectId_idx" ON "AuthSession"("subjectId");
 END
 $botan_migration$;
 
+DO $botan_migration$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611030001_cashier_role' AND rolled_back_at IS NULL AND finished_at IS NULL) THEN
+    RAISE EXCEPTION 'Unfinished migration: 202611030001_cashier_role. Resolve it before running setup.';
+  ELSIF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611030001_cashier_role' AND rolled_back_at IS NULL AND finished_at IS NOT NULL) THEN
+    IF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611030001_cashier_role' AND rolled_back_at IS NULL AND checksum <> '6b9de1657a7f1c92d09b1faa1c1858f6dd519bc7ee1ad876c5478bd0fb544b7c') THEN
+      RAISE EXCEPTION 'Migration checksum mismatch: 202611030001_cashier_role. No changes applied.';
+    END IF;
+    RAISE NOTICE 'Already applied: 202611030001_cashier_role';
+  ELSE
+-- The order taker is called a cashier again, with full authority over orders
+-- (take, assign riders, payments, delivery, cancel, refund). Existing order takers keep their access.
+ALTER TYPE "StaffRole" RENAME VALUE 'OPERATOR' TO 'CASHIER';
+
+    INSERT INTO public."_prisma_migrations" (id, checksum, finished_at, migration_name, applied_steps_count)
+    VALUES (gen_random_uuid()::text, '6b9de1657a7f1c92d09b1faa1c1858f6dd519bc7ee1ad876c5478bd0fb544b7c', now(), '202611030001_cashier_role', 1);
+  END IF;
+END
+$botan_migration$;
+
 ALTER TABLE public."_prisma_migrations" ENABLE ROW LEVEL SECURITY;
 COMMIT;
 SELECT migration_name, finished_at FROM public."_prisma_migrations" WHERE rolled_back_at IS NULL ORDER BY migration_name;

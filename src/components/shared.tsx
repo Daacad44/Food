@@ -13,7 +13,7 @@ export function landing(role?: string) {
 export const roleLabel: Record<string, string> = {
   OWNER: 'Milkiile',
   MANAGER: 'Maamule',
-  OPERATOR: 'Dalab-qaade',
+  CASHIER: 'Cashier',
   RIDER: 'Darawal',
   ACCOUNTANT: 'Xisaabiye',
 };

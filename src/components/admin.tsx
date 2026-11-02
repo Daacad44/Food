@@ -26,8 +26,8 @@ const groups: { title: string; items: [href: string, label: string, roles: strin
   {
     title: 'DALABYADA',
     items: [
-      ['/admin/orders/new', 'Dalab cusub', ['OWNER', 'MANAGER', 'OPERATOR']],
-      ['/admin/orders', 'Dalabyada', ['OWNER', 'MANAGER', 'OPERATOR', 'ACCOUNTANT']],
+      ['/admin/orders/new', 'Dalab cusub', ['OWNER', 'MANAGER', 'CASHIER']],
+      ['/admin/orders', 'Dalabyada', ['OWNER', 'MANAGER', 'CASHIER', 'ACCOUNTANT']],
       ['/admin/delivery', 'Darawallada', ['OWNER', 'MANAGER']],
       ['/rider', 'Rider portal', ['RIDER']],
     ],
@@ -59,7 +59,7 @@ const groups: { title: string; items: [href: string, label: string, roles: strin
   {
     title: 'MAALIYADDA',
     items: [
-      ['/admin/payments', 'Payments', ['OWNER', 'MANAGER', 'ACCOUNTANT', 'OPERATOR']],
+      ['/admin/payments', 'Payments', ['OWNER', 'MANAGER', 'ACCOUNTANT', 'CASHIER']],
       ['/admin/expenses', 'Expenses', ['OWNER', 'MANAGER', 'ACCOUNTANT']],
     ],
   },

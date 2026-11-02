@@ -135,7 +135,7 @@
   background: #3d3b8e;
   color: #fff;
 }
-.role-badge.role-operator {
+.role-badge.role-cashier {
   background: rgba(229, 66, 30, 0.14);
   color: #b3300f;
 }
@@ -554,4 +554,201 @@ fieldset.plain {
     flex: 1;
     justify-content: center;
   }
+}
+
+/* Users page: clickable counts, bulk bar, in-place role, sorting */
+.user-kpis > .user-kpi {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 16px 18px;
+  border: 1.5px solid transparent;
+  border-radius: 18px;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--display);
+  text-align: left;
+  cursor: pointer;
+}
+.user-kpis > .user-kpi:disabled {
+  cursor: default;
+  opacity: 1;
+}
+.user-kpis > .user-kpi:not(:disabled):hover,
+.user-kpis > .user-kpi.on {
+  border-color: var(--ink);
+}
+.user-kpi strong {
+  font-family: var(--mono);
+  font-size: 28px;
+  font-weight: 500;
+  line-height: 1;
+}
+.bulk-bar {
+  position: sticky;
+  top: 12px;
+  z-index: 4;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-radius: 16px;
+  background: var(--ink);
+  color: var(--bone);
+  box-shadow: 0 14px 30px -18px rgba(14, 13, 51, 0.7);
+}
+.bulk-bar b {
+  margin-right: 6px;
+}
+.staff-app .bulk-bar .small-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  border-color: var(--bone-rule);
+  color: var(--bone);
+}
+.staff-app .bulk-bar .small-button:hover {
+  background: var(--bone);
+  color: var(--ink);
+}
+.bulk-bar select {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1.5px solid var(--bone-rule);
+  border-radius: 99px;
+  background: transparent;
+  color: var(--bone);
+  font-family: var(--display);
+}
+.bulk-bar select option {
+  color: var(--ink);
+}
+.bulk-bar .text-link {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: var(--lilac);
+  cursor: pointer;
+}
+.user-table th.pick,
+.user-table td.pick {
+  width: 44px;
+  padding-right: 0;
+}
+.user-table input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--ink);
+}
+.user-table tr.is-picked {
+  background: rgba(23, 22, 74, 0.06);
+}
+.user-table .sort {
+  display: inline-flex;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+.user-table .sort.on {
+  color: var(--ink);
+}
+.role-select {
+  appearance: none;
+  padding: 6px 28px 6px 12px;
+  border: 0;
+  border-radius: 99px;
+  font-family: var(--mono);
+  font-size: 11px;
+  cursor: pointer;
+  background: rgba(23, 22, 74, 0.08)
+    url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%2317164a' fill='none' stroke-width='1.5'/%3E%3C/svg%3E")
+    no-repeat right 10px center;
+  color: var(--ink);
+}
+.role-select.role-owner {
+  background-color: var(--ink);
+  color: var(--bone);
+}
+.role-select.role-manager {
+  background-color: #3d3b8e;
+  color: #fff;
+}
+.role-select.role-cashier {
+  background-color: rgba(229, 66, 30, 0.14);
+  color: #b3300f;
+}
+.role-select.role-rider {
+  background-color: var(--sage);
+}
+.role-select.role-accountant {
+  background-color: #f2e3b8;
+}
+.role-select option {
+  background: #fff;
+  color: var(--ink);
+}
+.role-diff {
+  margin: 10px 0;
+  padding: 12px 14px;
+  border-radius: 12px;
+}
+.role-diff ul {
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.role-diff.gain {
+  background: rgba(46, 125, 79, 0.1);
+}
+.role-diff.lose {
+  background: rgba(229, 66, 30, 0.1);
+}
+@media (max-width: 640px) {
+  .user-table td.pick {
+    grid-row: 1;
+    padding-top: 18px;
+  }
+  .user-table td:first-child {
+    grid-column: auto;
+  }
+  .user-table tr {
+    grid-template-columns: 34px 1fr auto;
+  }
+  .user-table td:nth-child(2) {
+    grid-column: 2 / -1;
+    padding-top: 14px;
+  }
+}
+.user-dialog > p,
+.user-dialog > .role-diff {
+  margin-left: 26px;
+  margin-right: 26px;
+}
+.user-dialog > p:first-of-type {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 18px;
+}
+.user-dialog > .modal-footer {
+  padding: 18px 26px 24px;
+  margin-top: 12px;
+}
+.bulk-bar select {
+  width: auto;
+}
+.role-select.role-owner {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23f3ede2' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
+}
+.role-select.role-manager {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%23ffffff' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
 }

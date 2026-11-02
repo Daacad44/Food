@@ -43,6 +43,7 @@ import {
 } from '@/lib/operations';
 import { paymentModes, requireProvider } from '@/lib/payments';
 import {
+  bulkUsers,
   changeMyPassword,
   createUser,
   getUser,
@@ -180,6 +181,8 @@ async function handle(request: Request, context: Context) {
       return json(await listUsers(await requireActor(request, MANAGERS)));
     if (path === 'admin/users' && method === 'POST')
       return json(await createUser(await body(), await requireActor(request, MANAGERS)), 201);
+    if (path === 'admin/users/bulk' && method === 'POST')
+      return json(await bulkUsers(await body(), await requireActor(request, MANAGERS)));
     if (p[0] === 'admin' && p[1] === 'users' && p[2]) {
       const u = await requireActor(request, MANAGERS),
         id = z.uuid().parse(p[2]);
@@ -347,7 +350,7 @@ async function handle(request: Request, context: Context) {
       return json(await assignRider(z.uuid().parse(p[2]), d.riderId, u));
     }
     if (p[0] === 'admin' && p[1] === 'orders' && p[2] && p[3] === 'status' && method === 'PATCH') {
-      const u = await requireActor(request, MANAGERS);
+      const u = await requireActor(request, ORDER_TAKERS);
       const d = z
         .object({ status: z.literal('CANCELLED') })
         .strict()
@@ -412,7 +415,7 @@ async function handle(request: Request, context: Context) {
     }
     // ---- Payments ----
     if (path === 'admin/payments' && method === 'GET') {
-      const u = await requireActor(request, [...FINANCE, 'OPERATOR']);
+      const u = await requireActor(request, [...FINANCE, 'CASHIER']);
       return json(
         await db.payment.findMany({
           where: { order: { restaurantId: u.restaurantId } },
@@ -430,7 +433,7 @@ async function handle(request: Request, context: Context) {
       return json(await capturePayment(z.uuid().parse(p[1]), u, captureSchema.parse(await body())));
     }
     if (p[0] === 'payments' && p[1] && p[2] === 'refund' && method === 'POST') {
-      const u = await requireActor(request, FINANCE);
+      const u = await requireActor(request, [...FINANCE, 'CASHIER']);
       return json(
         await refundPayment(p[1], await body(), request.headers.get('idempotency-key') || '', u),
       );

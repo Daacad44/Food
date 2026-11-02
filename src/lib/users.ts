@@ -1,6 +1,6 @@
 // Staff accounts: who can sign in, with which role, and what they did.
 //
-// Owners manage everyone. Managers manage order takers (OPERATOR) and riders only, so a manager can never
+// Owners manage everyone. Managers manage cashiers and riders only, so a manager can never
 // create or promote someone to their own level or above. Nobody can suspend themselves, change their own
 // role here, or leave the restaurant without an active owner. Every change is audited, and changing a
 // password, role or status signs that person out everywhere.
@@ -12,11 +12,11 @@ import { ensure } from './errors';
 import { audit, transaction } from './orders';
 import { passwordHash, verifyPassword, type Actor } from './security';
 
-export const ROLES = ['OWNER', 'MANAGER', 'OPERATOR', 'RIDER', 'ACCOUNTANT'] as const;
+export const ROLES = ['OWNER', 'MANAGER', 'CASHIER', 'RIDER', 'ACCOUNTANT'] as const;
 /** Roles each role may create and manage. */
 export const MANAGEABLE: Record<string, readonly StaffRole[]> = {
   OWNER: ROLES,
-  MANAGER: ['OPERATOR', 'RIDER'],
+  MANAGER: ['CASHIER', 'RIDER'],
 };
 export const canManage = (actor: Actor, role: string) =>
   (MANAGEABLE[actor.role] || []).includes(role as StaffRole);
@@ -361,4 +361,40 @@ export async function changeMyPassword(body: unknown, user: Actor) {
     await audit(tx, user, 'PASSWORD_CHANGE', 'StaffUser', user.id);
     return { ok: true };
   });
+}
+
+export const bulkSchema = z
+  .object({
+    ids: z.array(z.uuid()).min(1).max(100),
+    action: z.enum(['suspend', 'activate', 'signout', 'role']),
+    role: z.enum(ROLES).optional(),
+  })
+  .strict();
+/**
+ * Applies one action to many people. Each person goes through the same rules as a single change and
+ * succeeds or fails on their own, so one refusal (e.g. a rider on the road) doesn't block the rest.
+ */
+export async function bulkUsers(body: unknown, user: Actor) {
+  const data = bulkSchema.parse(body);
+  ensure(data.action !== 'role' || data.role, 'Dooro doorka cusub');
+  const results: { id: string; ok: boolean; error?: string }[] = [];
+  for (const id of new Set(data.ids)) {
+    try {
+      if (data.action === 'suspend') await setUserStatus(id, 'SUSPENDED', user);
+      else if (data.action === 'activate') await setUserStatus(id, 'ACTIVE', user);
+      else if (data.action === 'role') await updateUser(id, { role: data.role }, user);
+      else {
+        ensure(id !== user.id, 'Akoonkaaga halkan kama saari kartid', 400);
+        await revokeSessions(id, user);
+      }
+      results.push({ id, ok: true });
+    } catch (e) {
+      results.push({ id, ok: false, error: e instanceof Error ? e.message : 'Khalad' });
+    }
+  }
+  return {
+    results,
+    done: results.filter((r) => r.ok).length,
+    failed: results.filter((r) => !r.ok).length,
+  };
 }

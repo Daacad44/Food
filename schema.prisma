@@ -9,7 +9,7 @@ datasource db {
 enum StaffRole {
   OWNER
   MANAGER
-  OPERATOR
+  CASHIER
   RIDER
   ACCOUNTANT
 }

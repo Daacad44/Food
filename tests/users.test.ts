@@ -4,6 +4,7 @@ import { db } from '../src/lib/db';
 import { restaurant } from '../src/lib/orders';
 import { passwordHash, type Actor } from '../src/lib/security';
 import {
+  bulkUsers,
   changeMyPassword,
   createUser,
   listUsers,
@@ -36,7 +37,7 @@ async function login(email: string, password = PASSWORD) {
   });
   return { res, cookie: res.headers.get('set-cookie')?.split(';')[0] || '' };
 }
-async function staff(role: 'OWNER' | 'MANAGER' | 'OPERATOR' | 'RIDER') {
+async function staff(role: 'OWNER' | 'MANAGER' | 'CASHIER' | 'RIDER') {
   const u = await db.staffUser.create({
     data: {
       restaurantId: r.id,
@@ -59,7 +60,7 @@ beforeAll(async () => {
   r = await restaurant();
   owner = await staff('OWNER');
   manager = await staff('MANAGER');
-  operator = await staff('OPERATOR');
+  operator = await staff('CASHIER');
 });
 afterAll(async () => {
   await db.$disconnect();
@@ -67,7 +68,7 @@ afterAll(async () => {
 describe('user management', () => {
   it('creates a user with a one-time temporary password they must change', async () => {
     const result = await createUser(
-      { fullName: 'Cali Dalab', email: unique('cali'), phone: '615000123', role: 'OPERATOR' },
+      { fullName: 'Cali Dalab', email: unique('cali'), phone: '615000123', role: 'CASHIER' },
       owner,
     );
     expect(result.temporaryPassword).toMatch(/^[A-Za-z0-9]{4}(-[A-Za-z0-9]{1,4}){3}$/);
@@ -161,7 +162,7 @@ describe('user management', () => {
     ).toBe(1);
   });
   it('suspending signs the person out at once and blocks sign-in', async () => {
-    const person = await staff('OPERATOR');
+    const person = await staff('CASHIER');
     const { cookie } = await login(person.email);
     expect((await call('auth/me', 'GET', undefined, cookie)).status).toBe(200);
     await setUserStatus(person.id, 'SUSPENDED', manager);
@@ -201,7 +202,7 @@ describe('user management', () => {
     expect((await fresh.res.json()).mustChangePassword).toBe(true);
   });
   it('changing your own password keeps this device and signs out the others', async () => {
-    const person = await staff('OPERATOR');
+    const person = await staff('CASHIER');
     const a = await login(person.email),
       b = await login(person.email);
     await expect(
@@ -218,7 +219,7 @@ describe('user management', () => {
     expect((await call('account', 'GET', undefined, b.cookie)).status).toBe(401);
   });
   it('shows devices, activity and work counts; signs out one device', async () => {
-    const person = await staff('OPERATOR');
+    const person = await staff('CASHIER');
     await login(person.email);
     await login(person.email);
     const { cookie } = await login(owner.email!);
@@ -247,5 +248,29 @@ describe('user management', () => {
     ).toBe(403);
     expect((await call('account', 'PATCH', { fullName: 'Op Renamed' }, cookie)).status).toBe(200);
     expect((await call('account', 'PATCH', { role: 'OWNER' }, cookie)).status).toBe(400);
+  });
+  it('lets an owner change many roles at once; refusals are reported per person', async () => {
+    const a = await staff('RIDER'),
+      b = await staff('RIDER');
+    const result = await bulkUsers(
+      { ids: [a.id, b.id, owner.id], action: 'role', role: 'CASHIER' },
+      owner,
+    );
+    expect(result.done).toBe(2);
+    expect(result.failed).toBe(1);
+    expect(result.results.find((r) => r.id === owner.id)?.error).toContain('Akoonkaaga');
+    for (const id of [a.id, b.id])
+      expect((await db.staffUser.findUniqueOrThrow({ where: { id } })).role).toBe('CASHIER');
+    await expect(
+      bulkUsers({ ids: [a.id], action: 'role', role: 'OWNER' }, manager),
+    ).resolves.toMatchObject({
+      failed: 1,
+    });
+    const suspended = await bulkUsers({ ids: [a.id, b.id], action: 'suspend' }, manager);
+    expect(suspended.done).toBe(2);
+    expect(
+      await db.staffUser.count({ where: { id: { in: [a.id, b.id] }, status: 'SUSPENDED' } }),
+    ).toBe(2);
+    await expect(bulkUsers({ ids: [a.id], action: 'role' }, owner)).rejects.toThrow('doorka');
   });
 });

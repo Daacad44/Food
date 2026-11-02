@@ -1,5 +1,11 @@
 # Validation report — 21 October 2026
 
+## Cashier role and users page — 3 November 2026
+
+- 48 unit/PostgreSQL integration tests and 10 desktop/mobile browser tests passed; TypeScript and build passed.
+- The order-taker role is renamed back to `CASHIER` (migration `202611030001_cashier_role`, existing accounts keep access) and now also cancels orders and issues refunds; accountants and riders still cannot cancel.
+- Bulk role change, suspend and sign-out are applied per person with refusals reported; an owner changes a role from the users list with a gain/lose confirmation (browser test).
+
 ## User management — 2 November 2026
 
 - 47 unit and PostgreSQL integration tests (10 new for users) and 8 desktop/mobile browser tests passed; TypeScript and the production build passed.
