@@ -81,7 +81,7 @@ beforeAll(async () => {
   for (const [email, role] of [
     ['test-owner@botan.local', 'OWNER'],
     ['test-manager@botan.local', 'MANAGER'],
-    ['test-operator@botan.local', 'OPERATOR'],
+    ['test-operator@botan.local', 'CASHIER'],
     ['test-accountant@botan.local', 'ACCOUNTANT'],
     ['test-rider@botan.local', 'RIDER'],
     ['other-rider@botan.local', 'RIDER'],
@@ -169,7 +169,7 @@ describe('taking a delivery order', () => {
       provider: 'manual',
     });
   });
-  it('deducts stock once and returns it when a manager cancels', async () => {
+  it('deducts stock once and returns it when a cashier cancels', async () => {
     const before = Number(
       (await db.inventoryItem.findUniqueOrThrow({ where: { id: stock.id } })).quantityOnHand,
     );
@@ -178,8 +178,9 @@ describe('taking a delivery order', () => {
       (await db.inventoryItem.findUniqueOrThrow({ where: { id: stock.id } })).quantityOnHand,
     );
     expect(after).toBe(before - 1);
-    await expect(transitionOrder(o.id, 'CANCELLED', operator)).rejects.toThrow('Maamulaha');
-    await transitionOrder(o.id, 'CANCELLED', manager);
+    await expect(transitionOrder(o.id, 'CANCELLED', accountant)).rejects.toThrow('Cashier');
+    await expect(transitionOrder(o.id, 'CANCELLED', rider)).rejects.toThrow();
+    await transitionOrder(o.id, 'CANCELLED', operator);
     expect(
       Number(
         (await db.inventoryItem.findUniqueOrThrow({ where: { id: stock.id } })).quantityOnHand,
@@ -380,7 +381,7 @@ describe('HTTP: authorization, the orders board and payments', () => {
       email: 'test-operator@botan.local',
       password: PASSWORD,
     });
-    expect((await res.json()).role).toBe('OPERATOR');
+    expect((await res.json()).role).toBe('CASHIER');
     expect((await call('menu/items', 'GET', undefined, operatorCookie)).status).toBe(200);
   });
   it('takes an order over HTTP with an idempotency key and the reviewed total', async () => {
@@ -452,9 +453,31 @@ describe('HTTP: authorization, the orders board and payments', () => {
       200,
     );
     expect(
+      (
+        await call(
+          `admin/orders/${o.id}/status`,
+          'PATCH',
+          { status: 'CANCELLED' },
+          accountantCookie,
+        )
+      ).status,
+    ).toBe(403);
+    // A cashier has full authority over orders: cancel and refund.
+    expect(
       (await call(`admin/orders/${o.id}/status`, 'PATCH', { status: 'CANCELLED' }, operatorCookie))
         .status,
-    ).toBe(403);
+    ).toBe(200);
+    const paid = await createOrder(input({ paid: true }), randomUUID(), operator);
+    const payment = await db.payment.findFirstOrThrow({ where: { orderId: paid.id } });
+    const refund = await call(
+      `payments/${payment.id}/refund`,
+      'POST',
+      { amount: 2, reason: 'Customer returned a drink' },
+      operatorCookie,
+      { 'Idempotency-Key': randomUUID() },
+    );
+    expect(refund.status).toBe(200);
+    expect((await reload(paid.id)).paymentStatus).toBe('PARTIALLY_REFUNDED');
   });
   it('shows a rider only their own orders', async () => {
     const res = await call('rider/orders', 'GET', undefined, riderCookie),

@@ -122,6 +122,6 @@ export function constantEqual(a: string, b: string) {
 export const MANAGERS = ['OWNER', 'MANAGER'] as const;
 export const FINANCE = ['OWNER', 'MANAGER', 'ACCOUNTANT'] as const;
 /** Staff who take orders, see every order and assign riders. */
-export const ORDER_TAKERS = ['OWNER', 'MANAGER', 'OPERATOR'] as const;
+export const ORDER_TAKERS = ['OWNER', 'MANAGER', 'CASHIER'] as const;
 /** Staff who can read orders (accountants read, never change them). */
-export const ORDER_READERS = ['OWNER', 'MANAGER', 'OPERATOR', 'ACCOUNTANT'] as const;
+export const ORDER_READERS = ['OWNER', 'MANAGER', 'CASHIER', 'ACCOUNTANT'] as const;

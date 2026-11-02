@@ -1,6 +1,6 @@
 'use client';
 import Link from 'next/link';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Phone, Plus, Printer, RefreshCw, Search, Truck } from 'lucide-react';
 import { api, useData, useStore } from './store';
 import { Loading, Notice, viewLabel } from './shared';
@@ -150,7 +150,7 @@ function OrderCard({
     [busy, setBusy] = useState(false);
   const v = orderView(o.status);
   const canAssign =
-    ['OWNER', 'MANAGER', 'OPERATOR'].includes(user?.role) && (v === 'pending' || v === 'assigned');
+    ['OWNER', 'MANAGER', 'CASHIER'].includes(user?.role) && (v === 'pending' || v === 'assigned');
   const payment = o.payments?.[0];
   return (
     <article className={'order-card ' + v}>
@@ -235,8 +235,9 @@ export function OrderDetail({ id }: { id: string }) {
   if (error) return <Notice error={error} />;
   if (!o) return <Loading />;
   const v = orderView(o.status),
-    taker = ['OWNER', 'MANAGER', 'OPERATOR'].includes(user?.role),
+    taker = ['OWNER', 'MANAGER', 'CASHIER'].includes(user?.role),
     manager = ['OWNER', 'MANAGER'].includes(user?.role),
+    refunder = ['OWNER', 'MANAGER', 'CASHIER', 'ACCOUNTANT'].includes(user?.role),
     open = v === 'pending' || v === 'assigned';
   async function run(work: () => Promise<unknown>, done: string) {
     setBusy(true);
@@ -395,6 +396,14 @@ export function OrderDetail({ id }: { id: string }) {
                 {taker && open && ['PENDING', 'UNPAID'].includes(p.status) && (
                   <PaymentCapture payment={p} onDone={refresh} />
                 )}
+                {p.refunds?.map((r: any) => (
+                  <small className="muted" key={r.id}>
+                    Lacag celin {formatMoney(r.amount)} · {r.reason}
+                  </small>
+                ))}
+                {refunder && ['PAID', 'PARTIALLY_REFUNDED'].includes(p.status) && (
+                  <RefundForm payment={p} onDone={refresh} />
+                )}
               </div>
             ))}
           </div>
@@ -405,7 +414,7 @@ export function OrderDetail({ id }: { id: string }) {
               onCompleted={refresh}
             />
           )}
-          {manager && open && (
+          {taker && open && (
             <button
               className="button outline danger full"
               disabled={busy}
@@ -439,5 +448,90 @@ export function OrderDetail({ id }: { id: string }) {
       )}
       {printing && <PrintOnce order={o} restaurant={restaurant} done={() => setPrinting(false)} />}
     </div>
+  );
+}
+
+/** Gives money back on a received payment (all of it or part). Retries never refund twice. */
+function RefundForm({ payment, onDone }: { payment: any; onDone: () => Promise<void> }) {
+  const { toast } = useStore(),
+    refunded = (payment.refunds || []).reduce((s: number, r: any) => s + Number(r.amount), 0),
+    left = Math.round((Number(payment.amount) - refunded) * 100) / 100,
+    [open, setOpen] = useState(false),
+    [amount, setAmount] = useState(String(left)),
+    [reason, setReason] = useState(''),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState(''),
+    key = useRef('');
+  if (!open)
+    return (
+      <button className="text-link" onClick={() => setOpen(true)}>
+        Lacag celi (refund)
+      </button>
+    );
+  return (
+    <form
+      className="payment-capture"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (busy) return;
+        key.current ||= crypto.randomUUID();
+        setBusy(true);
+        setError('');
+        try {
+          await api('payments/' + payment.id + '/refund', {
+            method: 'POST',
+            headers: { 'Idempotency-Key': key.current },
+            body: JSON.stringify({ amount: Number(amount), reason: reason.trim() }),
+          });
+          key.current = '';
+          setOpen(false);
+          setReason('');
+          await onDone();
+          toast('Lacagta waa la celiyey');
+        } catch (err) {
+          setError((err as Error).message);
+        } finally {
+          setBusy(false);
+        }
+      }}
+    >
+      <label className="field">
+        Inta la celinayo (ugu badnaan {formatMoney(left)})
+        <input
+          type="number"
+          min="0.01"
+          step="0.01"
+          max={left}
+          required
+          value={amount}
+          onChange={(e) => {
+            key.current = '';
+            setAmount(e.target.value);
+          }}
+        />
+      </label>
+      <label className="field">
+        Sababta
+        <input
+          required
+          minLength={3}
+          maxLength={300}
+          value={reason}
+          onChange={(e) => {
+            key.current = '';
+            setReason(e.target.value);
+          }}
+        />
+      </label>
+      {error && <Notice error={error} />}
+      <div className="row-actions">
+        <button className="button outline danger" disabled={busy}>
+          {busy ? 'Sug…' : 'Celi lacagta'}
+        </button>
+        <button type="button" className="button outline" onClick={() => setOpen(false)}>
+          Ka noqo
+        </button>
+      </div>
+    </form>
   );
 }

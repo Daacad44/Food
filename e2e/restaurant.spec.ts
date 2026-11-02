@@ -46,6 +46,7 @@ test('the orders board shows pending orders and assigns a rider', async ({ page 
   const card = page.locator('.order-card').filter({ hasText: 'Browser Guest' }).first();
   await expect(card).toBeVisible();
   await card.getByRole('combobox').selectOption({ label: name });
+  await expect(page.getByRole('status').filter({ hasText: 'qoondeeyey' })).toBeVisible();
   await page.getByRole('tab', { name: /Assigned/ }).click();
   await expect(page.locator('.order-card').filter({ hasText: name }).first()).toBeVisible();
 });
@@ -70,7 +71,7 @@ test('an owner adds a user who must choose a password at first sign-in', async (
     name = `Browser Operator ${stamp}`;
   await dialog.getByLabel('Magaca oo dhan').fill(name);
   await dialog.getByLabel('Email (login)').fill(email);
-  await dialog.getByText('Dalab-qaade', { exact: true }).click();
+  await dialog.getByText('Cashier', { exact: true }).click();
   await dialog.getByRole('button', { name: 'Abuur akoonka' }).click();
   const temporary = (await page.locator('.temp-password code').textContent())!.trim();
   await expect(page.getByRole('link', { name: new RegExp(name) })).toBeVisible();
@@ -87,4 +88,22 @@ test('an owner adds a user who must choose a password at first sign-in', async (
   await other.getByRole('button', { name: 'Beddel password-ka' }).click();
   await expect(other).toHaveURL('/admin/orders/new');
   await expect(other.getByRole('link', { name: 'Isticmaalayaasha' })).toHaveCount(0);
+});
+test('an owner changes a role straight from the users list', async ({ page }) => {
+  await signIn(page);
+  const name = `Role Change ${Date.now()}`;
+  const created = await page.request.post('/api/v1/admin/users', {
+    data: { fullName: name, email: `role-${Date.now()}@botan.local`, role: 'RIDER' },
+  });
+  expect(created.status()).toBe(201);
+  await page.goto('/admin/users');
+  const row = page.locator('.user-table tr').filter({ hasText: name });
+  await expect(row).toBeVisible();
+  await row.getByRole('combobox').selectOption('CASHIER');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByText('Waxay helayaan')).toBeVisible();
+  await expect(dialog.getByText('+ Jooji dalab')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Xaqiiji' }).click();
+  await expect(page.getByRole('status').filter({ hasText: 'hadda waa Cashier' })).toBeVisible();
+  await expect(row.getByRole('combobox')).toHaveValue('CASHIER');
 });

@@ -6,6 +6,7 @@ import {
   ArrowLeft,
   Check,
   Copy,
+  Download,
   Eye,
   EyeOff,
   KeyRound,
@@ -23,24 +24,26 @@ import {
 import { api, useData, useStore } from './store';
 import { Loading, Notice, Wordmark, landing, roleLabel } from './shared';
 
-export const ROLES = ['OWNER', 'MANAGER', 'OPERATOR', 'RIDER', 'ACCOUNTANT'] as const;
+export const ROLES = ['OWNER', 'MANAGER', 'CASHIER', 'RIDER', 'ACCOUNTANT'] as const;
 const roleInfo: Record<string, string> = {
   OWNER: 'Wax walba: isticmaalayaasha oo dhan, maaliyadda iyo settings-ka.',
   MANAGER:
-    'Dalabyada iyo joojintooda, menu, kaydka, warbixinnada; dalab-qaadayaasha iyo darawallada.',
-  OPERATOR: 'Dalab qaado, darawal u qoondee, lacag diiwaangeli, xaqiiji gaarsiin.',
+    'Wax kasta oo dalab ah, menu, kaydka, warbixinnada; maamula cashier-yada iyo darawallada.',
+  CASHIER:
+    'Wax kasta oo dalab ah: qaadis, darawal, lacag, gaarsiin, joojin iyo lacag celin. Back office ma geli karo.',
   RIDER: 'Dalabyadiisa kaliya: arag cinwaanka, xaqiiji gaarsiinta iyo lacagta.',
   ACCOUNTANT: 'Warbixinnada, lacagaha iyo kharashaadka; dalabyada wuu akhriyaa oo kaliya.',
 };
 const permissions: [string, string[]][] = [
-  ['Dalab qaado', ['OWNER', 'MANAGER', 'OPERATOR']],
-  ['Darawal u qoondee', ['OWNER', 'MANAGER', 'OPERATOR']],
-  ['Lacag diiwaangeli', ['OWNER', 'MANAGER', 'OPERATOR', 'RIDER']],
-  ['Xaqiiji gaarsiin', ['OWNER', 'MANAGER', 'OPERATOR', 'RIDER']],
-  ['Jooji dalab', ['OWNER', 'MANAGER']],
+  ['Dalab qaado', ['OWNER', 'MANAGER', 'CASHIER']],
+  ['Darawal u qoondee', ['OWNER', 'MANAGER', 'CASHIER']],
+  ['Lacag diiwaangeli', ['OWNER', 'MANAGER', 'CASHIER', 'RIDER']],
+  ['Xaqiiji gaarsiin', ['OWNER', 'MANAGER', 'CASHIER', 'RIDER']],
+  ['Jooji dalab', ['OWNER', 'MANAGER', 'CASHIER']],
+  ['Lacag celi (refund)', ['OWNER', 'MANAGER', 'CASHIER', 'ACCOUNTANT']],
   ['Menu, xaafadaha, kaydka', ['OWNER', 'MANAGER']],
   ['Warbixinno & maaliyad', ['OWNER', 'MANAGER', 'ACCOUNTANT']],
-  ['Maamul dalab-qaade & darawal', ['OWNER', 'MANAGER']],
+  ['Maamul cashier & darawal', ['OWNER', 'MANAGER']],
   ['Maamul maamulayaasha & milkiilayaasha', ['OWNER']],
 ];
 const actionLabel: Record<string, string> = {
@@ -303,7 +306,7 @@ function RolePicker({
   );
 }
 const allowedFor = (role?: string) =>
-  role === 'OWNER' ? [...ROLES] : role === 'MANAGER' ? ['OPERATOR', 'RIDER'] : [];
+  role === 'OWNER' ? [...ROLES] : role === 'MANAGER' ? ['CASHIER', 'RIDER'] : [];
 
 function NewUserDialog({
   onClose,
@@ -319,7 +322,7 @@ function NewUserDialog({
     fullName: '',
     email: '',
     phone: '',
-    role: allowed.includes('OPERATOR') ? 'OPERATOR' : allowed[0],
+    role: allowed.includes('CASHIER') ? 'CASHIER' : allowed[0],
     mode: 'temporary' as 'temporary' | 'custom',
     password: '',
     mustChangePassword: true,
@@ -461,33 +464,217 @@ function NewUserDialog({
   );
 }
 
-/** Everyone who can sign in: search, filter, add, and open a person. */
+type SortKey = 'name' | 'role' | 'status' | 'login' | 'work';
+const roleOrder = Object.fromEntries(ROLES.map((r, n) => [r, n]));
+const csvCell = (v: unknown) => `"${String(v ?? '').replaceAll('"', '""')}"`;
+/** Confirms a role change and shows what the person gains and loses. */
+function RoleChangeDialog({
+  people,
+  role,
+  onClose,
+  onConfirm,
+}: {
+  people: any[];
+  role: string;
+  onClose: () => void;
+  onConfirm: () => Promise<void>;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null),
+    [busy, setBusy] = useState(false);
+  useEffect(() => dialog.current?.showModal(), []);
+  const from = [...new Set(people.map((p) => p.role))];
+  const gains = permissions.filter(([, r]) => r.includes(role) && from.some((f) => !r.includes(f)));
+  const loses = permissions.filter(([, r]) => !r.includes(role) && from.some((f) => r.includes(f)));
+  return (
+    <dialog
+      ref={dialog}
+      className="modal user-dialog"
+      onCancel={onClose}
+      aria-labelledby="role-title"
+    >
+      <div className="modal-heading">
+        <h2 id="role-title">Beddel doorka</h2>
+        <button className="icon-button" onClick={onClose} aria-label="Xir">
+          <X size={20} />
+        </button>
+      </div>
+      <p>
+        {people.length === 1 ? <b>{people[0].fullName}</b> : <b>{people.length} qof</b>} :{' '}
+        {from.map((f) => roleLabel[f]).join(', ')} → <RoleBadge role={role} />
+      </p>
+      <p className="muted">{roleInfo[role]}</p>
+      {gains.length > 0 && (
+        <div className="role-diff gain">
+          <b>Waxay helayaan</b>
+          <ul>
+            {gains.map(([label]) => (
+              <li key={label}>+ {label}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {loses.length > 0 && (
+        <div className="role-diff lose">
+          <b>Waxay waayayaan</b>
+          <ul>
+            {loses.map(([label]) => (
+              <li key={label}>− {label}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <p className="muted">
+        Qalab kasta oo ay ku jiraan waa laga saarayaa; mar kale ayay soo galayaan.
+      </p>
+      <div className="modal-footer">
+        <button type="button" className="button outline" onClick={onClose}>
+          Ka noqo
+        </button>
+        <button
+          className="button"
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true);
+            try {
+              await onConfirm();
+            } finally {
+              setBusy(false);
+            }
+          }}
+        >
+          {busy ? 'Sug…' : 'Xaqiiji'} <Check size={16} />
+        </button>
+      </div>
+    </dialog>
+  );
+}
+
+/** Everyone who can sign in: search, filter, sort, change roles in place, act on many at once. */
 export function UsersPage() {
   const { data, error, refresh } = useData<any[]>('admin/users', 30000),
-    { user } = useStore(),
+    { user, toast } = useStore(),
     router = useRouter(),
     [q, setQ] = useState(''),
     [role, setRole] = useState(''),
     [status, setStatus] = useState(''),
+    [sort, setSort] = useState<{ key: SortKey; dir: 1 | -1 }>({ key: 'role', dir: 1 }),
+    [selected, setSelected] = useState<string[]>([]),
     [adding, setAdding] = useState(false),
     [created, setCreated] = useState<{ name: string; password: string } | null>(null),
-    [showMatrix, setShowMatrix] = useState(false);
-  const rows = useMemo(
-    () =>
-      (data || []).filter(
+    [showMatrix, setShowMatrix] = useState(false),
+    [roleChange, setRoleChange] = useState<{ people: any[]; role: string } | null>(null),
+    [busy, setBusy] = useState(false),
+    [report, setReport] = useState('');
+  const allowed = allowedFor(user?.role);
+  const rows = useMemo(() => {
+    const value = (u: any): string | number =>
+      sort.key === 'name'
+        ? u.fullName.toLowerCase()
+        : sort.key === 'role'
+          ? roleOrder[u.role] * 1000 + (u.status === 'ACTIVE' ? 0 : 500)
+          : sort.key === 'status'
+            ? (u.status === 'ACTIVE' ? 0 : 1) + (u.activeSessions ? 0 : 0.5)
+            : sort.key === 'login'
+              ? -(u.lastLoginAt ? new Date(u.lastLoginAt).getTime() : 0)
+              : -(u.ordersTaken + u.deliveriesDone);
+    return (data || [])
+      .filter(
         (u) =>
           (!role || u.role === role) &&
           (!status || u.status === status) &&
           `${u.fullName} ${u.email} ${u.phone || ''}`
             .toLowerCase()
             .includes(q.trim().toLowerCase()),
-      ),
-    [data, q, role, status],
-  );
+      )
+      .sort((a, b) => {
+        const x = value(a),
+          y = value(b);
+        return (x < y ? -1 : x > y ? 1 : a.fullName.localeCompare(b.fullName)) * sort.dir;
+      });
+  }, [data, q, role, status, sort]);
+  const manageable = rows.filter((u) => u.manageable);
+  const chosen = (data || []).filter((u) => selected.includes(u.id));
   const total = data?.length || 0,
     active = data?.filter((u) => u.status === 'ACTIVE').length || 0,
     online = data?.filter((u) => u.activeSessions > 0).length || 0,
     pending = data?.filter((u) => u.mustChangePassword && u.status === 'ACTIVE').length || 0;
+  const toggle = (id: string) =>
+    setSelected((old) => (old.includes(id) ? old.filter((x) => x !== id) : [...old, id]));
+  async function bulk(action: string, newRole?: string) {
+    setBusy(true);
+    setReport('');
+    try {
+      const r = await api('admin/users/bulk', {
+        method: 'POST',
+        body: JSON.stringify({ ids: selected, action, ...(newRole ? { role: newRole } : {}) }),
+      });
+      const names = (id: string) => data?.find((u) => u.id === id)?.fullName || id;
+      setReport(
+        r.failed
+          ? `${r.done} waa la sameeyay, ${r.failed} ma suurtagelin: ` +
+              r.results
+                .filter((x: any) => !x.ok)
+                .map((x: any) => `${names(x.id)} (${x.error})`)
+                .join('; ')
+          : '',
+      );
+      toast(`${r.done} qof waa la cusboonaysiiyay`);
+      setSelected([]);
+      await refresh();
+    } catch (e) {
+      setReport((e as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+  function exportCsv() {
+    const header = [
+      'Magac',
+      'Email',
+      'Telefoon',
+      'Door',
+      'Xaalad',
+      'Galitaan',
+      'Dalab',
+      'Gaarsiin',
+      'Ku biiray',
+    ];
+    const lines = rows.map((u) =>
+      [
+        u.fullName,
+        u.email,
+        u.phone,
+        roleLabel[u.role],
+        u.status === 'ACTIVE' ? 'Firfircoon' : 'La hakiyey',
+        u.lastLoginAt ? new Date(u.lastLoginAt).toISOString() : '',
+        u.ordersTaken,
+        u.deliveriesDone,
+        new Date(u.createdAt).toISOString().slice(0, 10),
+      ]
+        .map(csvCell)
+        .join(','),
+    );
+    const url = URL.createObjectURL(
+      new Blob(['﻿' + [header.map(csvCell).join(','), ...lines].join('\n')], {
+        type: 'text/csv;charset=utf-8',
+      }),
+    );
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `botan-users-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  const Sort = ({ k, children }: { k: SortKey; children: React.ReactNode }) => (
+    <button
+      className={'sort ' + (sort.key === k ? 'on' : '')}
+      onClick={() => setSort((s) => ({ key: k, dir: s.key === k ? (-s.dir as 1 | -1) : 1 }))}
+      aria-label={'Kala sooc: ' + children}
+    >
+      {children}
+      {sort.key === k && <span aria-hidden="true">{sort.dir === 1 ? '↑' : '↓'}</span>}
+    </button>
+  );
   return (
     <div className="users">
       <div className="board-head">
@@ -498,6 +685,9 @@ export function UsersPage() {
         <div className="row-actions">
           <button className="button outline" onClick={() => setShowMatrix(!showMatrix)}>
             <ShieldCheck size={16} /> Doorarka &amp; oggolaanshaha
+          </button>
+          <button className="button outline" onClick={exportCsv} disabled={!rows.length}>
+            <Download size={16} /> Export
           </button>
           <button className="button" onClick={() => setAdding(true)}>
             <Plus size={16} /> Ku dar isticmaale
@@ -512,17 +702,24 @@ export function UsersPage() {
         />
       )}
       <div className="user-kpis">
-        {[
-          ['Wadar', total],
-          ['Firfircoon', active],
-          ['Hadda gudaha', online],
-          ['La hakiyey', total - active],
-          ['Sugaya password', pending],
-        ].map(([label, value]) => (
-          <div key={label as string}>
+        {(
+          [
+            ['Wadar', total, ''],
+            ['Firfircoon', active, 'ACTIVE'],
+            ['Hadda gudaha', online, ''],
+            ['La hakiyey', total - active, 'SUSPENDED'],
+            ['Sugaya password', pending, ''],
+          ] as const
+        ).map(([label, value, filter]) => (
+          <button
+            key={label}
+            className={'user-kpi ' + (filter && status === filter ? 'on' : '')}
+            onClick={() => filter && setStatus(status === filter ? '' : filter)}
+            disabled={!filter}
+          >
             <span className="mono-label">{label}</span>
             <strong>{value}</strong>
-          </div>
+          </button>
         ))}
       </div>
       {showMatrix && <PermissionMatrix />}
@@ -558,17 +755,77 @@ export function UsersPage() {
           <RefreshCw size={16} />
         </button>
       </div>
+      {selected.length > 0 && (
+        <div className="bulk-bar" role="region" aria-label="Ficillada la doortay">
+          <b>{selected.length} la doortay</b>
+          <select
+            aria-label="Beddel doorka kuwa la doortay"
+            value=""
+            disabled={busy}
+            onChange={(e) =>
+              e.target.value && setRoleChange({ people: chosen, role: e.target.value })
+            }
+          >
+            <option value="">Beddel doorka…</option>
+            {allowed.map((r) => (
+              <option key={r} value={r}>
+                {roleLabel[r]}
+              </option>
+            ))}
+          </select>
+          <button className="small-button" disabled={busy} onClick={() => void bulk('activate')}>
+            <UserCheck size={14} /> Fur
+          </button>
+          <button
+            className="small-button"
+            disabled={busy}
+            onClick={() => {
+              if (confirm(`${selected.length} qof ma hakinaysaa? Isla markiiba way ka baxayaan.`))
+                void bulk('suspend');
+            }}
+          >
+            <UserX size={14} /> Hakin
+          </button>
+          <button className="small-button" disabled={busy} onClick={() => void bulk('signout')}>
+            <LogOut size={14} /> Ka saar qalabka
+          </button>
+          <button className="text-link" onClick={() => setSelected([])}>
+            Ka saar doorashada
+          </button>
+        </div>
+      )}
+      {report && <Notice error={report} />}
       {error && <Notice error={error} />}
       {!data && !error && <Loading />}
       <div className="panel user-table">
         <table>
           <thead>
             <tr>
-              <th>Isticmaale</th>
-              <th>Doorka</th>
-              <th>Xaaladda</th>
-              <th>Galitaankii u dambeeyay</th>
-              <th>Hawsha</th>
+              <th className="pick">
+                <input
+                  type="checkbox"
+                  aria-label="Dooro dhammaan"
+                  checked={
+                    manageable.length > 0 && manageable.every((u) => selected.includes(u.id))
+                  }
+                  onChange={(e) => setSelected(e.target.checked ? manageable.map((u) => u.id) : [])}
+                />
+              </th>
+              <th>
+                <Sort k="name">Isticmaale</Sort>
+              </th>
+              <th>
+                <Sort k="role">Doorka</Sort>
+              </th>
+              <th>
+                <Sort k="status">Xaaladda</Sort>
+              </th>
+              <th>
+                <Sort k="login">Galitaankii u dambeeyay</Sort>
+              </th>
+              <th>
+                <Sort k="work">Hawsha</Sort>
+              </th>
             </tr>
           </thead>
           <tbody>
@@ -576,8 +833,20 @@ export function UsersPage() {
               <tr
                 key={u.id}
                 onClick={() => router.push('/admin/users/' + u.id)}
-                className={u.status === 'ACTIVE' ? '' : 'is-off'}
+                className={
+                  (u.status === 'ACTIVE' ? '' : 'is-off ') +
+                  (selected.includes(u.id) ? 'is-picked' : '')
+                }
               >
+                <td className="pick" onClick={(e) => e.stopPropagation()}>
+                  <input
+                    type="checkbox"
+                    aria-label={'Dooro ' + u.fullName}
+                    disabled={!u.manageable}
+                    checked={selected.includes(u.id)}
+                    onChange={() => toggle(u.id)}
+                  />
+                </td>
                 <td>
                   <Link
                     href={'/admin/users/' + u.id}
@@ -595,8 +864,23 @@ export function UsersPage() {
                     </span>
                   </Link>
                 </td>
-                <td>
-                  <RoleBadge role={u.role} />
+                <td onClick={(e) => e.stopPropagation()}>
+                  {u.manageable ? (
+                    <select
+                      className={'role-select role-' + u.role.toLowerCase()}
+                      aria-label={'Doorka ' + u.fullName}
+                      value={u.role}
+                      onChange={(e) => setRoleChange({ people: [u], role: e.target.value })}
+                    >
+                      {ROLES.filter((r) => allowed.includes(r) || r === u.role).map((r) => (
+                        <option key={r} value={r} disabled={!allowed.includes(r)}>
+                          {roleLabel[r]}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <RoleBadge role={u.role} />
+                  )}
                 </td>
                 <td>
                   <StatusBadge status={u.status} />
@@ -613,7 +897,7 @@ export function UsersPage() {
                 <td className="mono">
                   {u.role === 'RIDER'
                     ? `${u.deliveriesDone} gaarsiin`
-                    : ['OWNER', 'MANAGER', 'OPERATOR'].includes(u.role)
+                    : ['OWNER', 'MANAGER', 'CASHIER'].includes(u.role)
                       ? `${u.ordersTaken} dalab`
                       : '—'}
                 </td>
@@ -631,6 +915,29 @@ export function UsersPage() {
             if (result.temporaryPassword)
               setCreated({ name: result.user.fullName, password: result.temporaryPassword });
             await refresh();
+          }}
+        />
+      )}
+      {roleChange && (
+        <RoleChangeDialog
+          people={roleChange.people}
+          role={roleChange.role}
+          onClose={() => setRoleChange(null)}
+          onConfirm={async () => {
+            const ids = roleChange.people.map((p) => p.id);
+            if (ids.length === 1) {
+              try {
+                await api('admin/users/' + ids[0], {
+                  method: 'PATCH',
+                  body: JSON.stringify({ role: roleChange.role }),
+                });
+                toast(`${roleChange.people[0].fullName} hadda waa ${roleLabel[roleChange.role]}`);
+                await refresh();
+              } catch (e) {
+                setReport((e as Error).message);
+              }
+            } else await bulk('role', roleChange.role);
+            setRoleChange(null);
           }}
         />
       )}

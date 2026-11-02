@@ -30,7 +30,7 @@ Open the application on port 3000; it opens on the staff login. The local databa
 
 | Area            | Behaviour                                                                                                                                                                                                               |
 | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Login           | Staff email + password. Owners, managers and order takers land on **Dalab cusub**; riders on the rider portal; accountants on reports.                                                                                  |
+| Login           | Staff email + password. Owners, managers and cashiers land on **Dalab cusub**; riders on the rider portal; accountants on reports.                                                                                      |
 | Taking an order | Menu by category with photos and search, modifiers, quantities. Customer phone (a returning number fills in name and address), address, area (sets the fee), delivery fee, rider, discount %, VAT on/off, comment.      |
 | Payment         | Cash, EVC Plus, ZAAD or SAHAL with the payer's phone, marked _La qaaday_ (received) or _Lama qaadin_ (to collect). Recorded by hand for now; `src/lib/payments.ts` is ready for provider APIs. Split payments, refunds. |
 | Save / Print    | **Save** or **Save & Print** (80 mm receipt). The server re-prices every order; a changed total is rejected. Idempotency keys stop double orders.                                                                       |
@@ -38,8 +38,8 @@ Open the application on port 3000; it opens on the staff login. The local databa
 | Delivery        | Riders sign in on their phone, see only their orders and confirm delivery with a note and the money collected. Staff can confirm delivery for a rider without the app. Managers cancel (stock is returned).             |
 | Back office     | Menu, categories, modifiers, delivery areas and fees, riders, staff, pantry (stock deducted per order), suppliers and purchases, expenses, payments, reports (incl. revenue by payment method), audit log, settings.    |
 
-Roles are enforced in the API: `OWNER`, `MANAGER`, `OPERATOR` (order taker), `RIDER`, `ACCOUNTANT`. Cashier accounts
-became order takers; former kitchen accounts are suspended by the migration until an owner reviews them.
+Roles are enforced in the API: `OWNER`, `MANAGER`, `CASHIER`, `RIDER`, `ACCOUNTANT`. A **cashier** has full authority
+over orders: take, assign riders, record payments, confirm delivery, cancel and refund (no back office); former kitchen accounts are suspended by the migration until an owner reviews them.
 
 ### User management (`/admin/users`)
 
@@ -47,11 +47,15 @@ became order takers; former kitchen accounts are suspended by the migration unti
   filters, last sign-in, devices and work done (orders taken, deliveries). A roles & permissions matrix.
 - Add a user with a role description picker and either a one-time **temporary password** (shown once, copyable) or a
   password you set; temporary passwords must be changed at first sign-in, and nothing else works until they are.
+- **Change roles straight from the list** (owners: any role; managers: cashiers and riders), with a confirmation
+  showing what the person gains and loses. Select several people for **bulk** role change, suspend, reactivate or
+  sign-out; each is checked on its own and refusals are listed. Sort any column, filter by tapping a count, **export
+  CSV**.
 - Per person: edit name, email, phone and role; **reset password**, **sign out of all devices** or one device,
   **suspend / reactivate**; activity history from the audit log.
 - **Akoonkayga** (`/account`): everyone edits their own name and phone, changes their password (other devices are
   signed out) and sees their devices.
-- Rules: owners manage everyone; managers manage order takers and riders only; nobody changes their own role or
+- Rules: owners manage everyone; managers manage cashiers and riders only; nobody changes their own role or
   status there; a rider with an order on the road cannot be suspended; role, password and status changes sign the
   person out everywhere. Passwords are 12+ characters with letters and digits, bcrypt-hashed, never returned.
 

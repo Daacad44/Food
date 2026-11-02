@@ -1,6 +1,6 @@
 // Mobile-money providers (EVC Plus, ZAAD, SAHAL).
 //
-// Today every payment is recorded by hand: the order taker picks the method and the payer's number,
+// Today every payment is recorded by hand: the cashier picks the method and the payer's number,
 // and the money is marked received when it is seen on the phone or counted (operations.capturePayment).
 //
 // To automate a provider, implement PaymentProvider with the provider's official API documentation and
