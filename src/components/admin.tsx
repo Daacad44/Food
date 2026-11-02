@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { api, useData, useStore } from './store';
 import { NewRiderDialog, DeliveryCompletion } from './delivery-controls';
+import { ForcePasswordChange } from './users';
 import { Loading, Notice, Wordmark, landing, roleLabel, viewLabel } from './shared';
 import { formatMoney, orderView, paymentMethodLabel } from '@/lib/domain';
 const groups: { title: string; items: [href: string, label: string, roles: string[]][] }[] = [
@@ -65,7 +66,7 @@ const groups: { title: string; items: [href: string, label: string, roles: strin
   {
     title: 'MAAMULKA',
     items: [
-      ['/admin/staff', 'Shaqaalaha', ['OWNER']],
+      ['/admin/users', 'Isticmaalayaasha', ['OWNER', 'MANAGER']],
       ['/admin/notifications', 'Notifications', ['OWNER', 'MANAGER']],
       ['/admin/audit', 'Audit trail', ['OWNER', 'MANAGER']],
       ['/admin/settings', 'Settings', ['OWNER', 'MANAGER']],
@@ -98,13 +99,20 @@ export function StaffShell({ path, children }: { path: string; children: React.R
       router.replace(landing(user.role));
   }, [path, user, ready, router]);
   if (!user || user.kind !== 'staff') return <Loading />;
+  if (user.mustChangePassword) return <ForcePasswordChange />;
   const visible = groups
       .map((g) => ({
         title: g.title,
         items: g.items.filter((i) => i[2].includes(user.role)),
       }))
       .filter((g) => g.items.length),
-    title = groups.flatMap((g) => g.items).find((i) => i[0] === path)?.[1] || 'Botan workspace';
+    title =
+      groups.flatMap((g) => g.items).find((i) => i[0] === path)?.[1] ||
+      (path === '/account'
+        ? 'Akoonkayga'
+        : path.startsWith('/admin/users/')
+          ? 'Isticmaale'
+          : 'Botan');
   return (
     <div className="staff-app">
       <aside className={'sidebar ' + (open ? 'is-open' : '')}>
@@ -130,11 +138,18 @@ export function StaffShell({ path, children }: { path: string; children: React.R
         </nav>
         <div className="sidebar-bottom">
           <div className="staff-profile">
-            <div className="staff-avatar">{user.name.slice(0, 1)}</div>
-            <div>
-              <b>{user.name}</b>
-              <small>{roleLabel[user.role] || user.role}</small>
-            </div>
+            <Link
+              href="/account"
+              className="staff-profile-link"
+              title="Akoonkayga"
+              onClick={() => setOpen(false)}
+            >
+              <span className="staff-avatar">{user.name.slice(0, 1)}</span>
+              <span>
+                <b>{user.name}</b>
+                <small>{roleLabel[user.role] || user.role}</small>
+              </span>
+            </Link>
             <button
               className="icon-button"
               aria-label="Sign out"
@@ -159,7 +174,9 @@ export function StaffShell({ path, children }: { path: string; children: React.R
             <MenuIcon />
           </button>
           <b>{title}</b>
-          <span className="staff-avatar small-avatar">{user.name[0]}</span>
+          <Link href="/account" className="staff-avatar small-avatar" aria-label="Akoonkayga">
+            {user.name[0]}
+          </Link>
         </header>
         <main className="staff-content">{children}</main>
       </div>
@@ -442,31 +459,6 @@ export const resourceConfig: Record<
       { name: 'incurredAt', label: 'Date', type: 'datetime-local', required: true },
     ],
     columns: ['description', 'category', 'amount', 'incurredAt'],
-  },
-  staff: {
-    title: 'The people behind Botan',
-    description: 'Role-based access. Individual accounts. A team you trust.',
-    fields: [
-      { name: 'fullName', label: 'Full name', required: true },
-      { name: 'email', label: 'Email', type: 'email', required: true },
-      { name: 'phone', label: 'Phone' },
-      { name: 'password', label: 'New password (12+ characters)', type: 'password' },
-      {
-        name: 'role',
-        label: 'Role',
-        type: 'select',
-        options: ['OPERATOR', 'RIDER', 'MANAGER', 'ACCOUNTANT', 'OWNER'],
-        default: 'OPERATOR',
-      },
-      {
-        name: 'status',
-        label: 'Status',
-        type: 'select',
-        options: ['ACTIVE', 'SUSPENDED'],
-        default: 'ACTIVE',
-      },
-    ],
-    columns: ['fullName', 'email', 'role', 'status'],
   },
 };
 function display(value: any, key = '') {
@@ -1224,8 +1216,8 @@ export function Delivery() {
         />
       </div>
       <p className="muted">
-        Si aad u hakiso ama u beddesho password-ka darawal, isticmaal Shaqaalaha (milkiilaha
-        kaliya).
+        Si aad u hakiso darawal ama u beddesho password-kiisa, fur{' '}
+        <Link href="/admin/users">Isticmaalayaasha</Link>.
       </p>
     </>
   );

@@ -91,14 +91,6 @@ export const resourceSchemas = {
     incurredAt: z.iso.datetime(),
     receiptUrl: image,
   }),
-  staff: z.object({
-    fullName: text,
-    email: z.email().toLowerCase(),
-    phone: optionalText,
-    role: z.enum(['OWNER', 'MANAGER', 'OPERATOR', 'RIDER', 'ACCOUNTANT']),
-    status: z.enum(['ACTIVE', 'SUSPENDED']).default('ACTIVE'),
-    password: z.string().min(12).max(72).optional(),
-  }),
 } as const;
 export type Resource = keyof typeof resourceSchemas;
 const models = {
@@ -109,7 +101,6 @@ const models = {
   inventory: 'inventoryItem',
   suppliers: 'supplier',
   expenses: 'expense',
-  staff: 'staffUser',
 } as const;
 export function isResource(name: string): name is Resource {
   return name in models;
@@ -133,36 +124,12 @@ export async function saveResource(
   if (resourceId)
     for (const key of Object.keys(data))
       if (!(key in (payload as Record<string, unknown>))) delete data[key];
-  if (name === 'staff') {
-    ensure(user.role === 'OWNER', 'Only owner can manage staff', 403);
-    if (resourceId === user.id)
-      ensure(
-        (!data.role || data.role === user.role) && (!data.status || data.status === 'ACTIVE'),
-        'Cannot change your own role or status',
-      );
-    if (!resourceId) ensure(data.password, 'Password required');
-    if (data.password) {
-      data.passwordHash = await passwordHash(data.password);
-      delete data.password;
-    }
-  }
   return transaction(async (tx) => {
     const model = delegate(tx, name);
     const previous = resourceId
       ? await model.findFirst({ where: { id: resourceId, restaurantId: user.restaurantId } })
       : null;
     if (resourceId) ensure(previous, 'Resource not found', 404);
-    if (
-      name === 'staff' &&
-      previous?.role === 'OWNER' &&
-      ((data.role && data.role !== 'OWNER') || data.status === 'SUSPENDED')
-    )
-      ensure(
-        (await tx.staffUser.count({
-          where: { restaurantId: user.restaurantId, role: 'OWNER', status: 'ACTIVE' },
-        })) > 1,
-        'Cannot remove the last active owner',
-      );
     if (name === 'modifiers') {
       const merged = { ...previous, ...data };
       ensure(merged.minSelect <= merged.maxSelect, 'Minimum exceeds maximum');
@@ -179,8 +146,6 @@ export async function saveResource(
     const result = resourceId
       ? await model.update({ where: { id: resourceId }, data })
       : await model.create({ data });
-    if (name === 'staff' && resourceId && (data.passwordHash || data.role || data.status))
-      await tx.authSession.deleteMany({ where: { subjectId: resourceId } });
     await audit(tx, user, resourceId ? 'UPDATE' : 'CREATE', name, result.id);
     const { passwordHash: _password, ...safe } = result;
     return safe;
@@ -201,12 +166,7 @@ export async function listResource(name: Resource, user: Actor) {
     where: { restaurantId: user.restaurantId },
     ...(include ? { include } : {}),
     take: 200,
-    orderBy:
-      name === 'expenses'
-        ? { incurredAt: 'desc' }
-        : name === 'staff'
-          ? { fullName: 'asc' }
-          : undefined,
+    orderBy: name === 'expenses' ? { incurredAt: 'desc' } : undefined,
   });
   return rows.map((row: Record<string, unknown>) => {
     const { passwordHash: _, ...safe } = row;

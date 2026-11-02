@@ -1,5 +1,11 @@
 # Validation report — 21 October 2026
 
+## User management — 2 November 2026
+
+- 47 unit and PostgreSQL integration tests (10 new for users) and 8 desktop/mobile browser tests passed; TypeScript and the production build passed.
+- Covered: temporary passwords shown once and enforced at first sign-in (all other API calls blocked until changed), password rules, duplicate emails, unknown roles, manager limits (order takers and riders only, no promotion), no self role/status change, suspension signing out immediately and blocking sign-in, riders on the road not suspendable, password reset ending all sessions, own password change keeping the current device only, devices with browser/OS, activity and work counts, single-device sign-out, and endpoint access by role.
+- Browser: an owner adds an order taker, who signs in with the temporary password, is made to choose a new one and lands on the order screen without user management in the menu.
+
 ## Delivery-only rework — 2 November 2026
 
 - 37 unit and PostgreSQL integration tests and 6 desktop/mobile browser tests passed; TypeScript and the production build passed.

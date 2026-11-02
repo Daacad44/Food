@@ -20,6 +20,10 @@ export type Actor = {
   name: string;
   kind: 'staff' | 'customer';
   restaurantId: string;
+  /** A temporary password was set for them: everything except changing it is blocked. */
+  mustChangePassword?: boolean;
+  /** Id of the session this request came with. */
+  sessionId?: string;
 };
 export function cookieToken(request: Request) {
   return request.headers
@@ -43,18 +47,33 @@ export async function actor(request: Request): Promise<Actor | null> {
       name: user.fullName,
       kind: 'staff',
       restaurantId: user.restaurantId,
+      mustChangePassword: user.mustChangePassword,
+      sessionId: session.id,
     };
   }
   // Customer accounts were retired with the customer website.
   return null;
 }
-export async function requireActor(request: Request, roles?: readonly string[]) {
+export async function requireActor(
+  request: Request,
+  roles?: readonly string[],
+  options: { allowPendingPassword?: boolean } = {},
+) {
   const user = await actor(request);
   ensure(user, 'Fadlan gal akoonkaaga', 401);
+  ensure(
+    !user.mustChangePassword || options.allowPendingPassword,
+    'Marka hore beddel password-ka ku meel gaarka ah',
+    403,
+  );
   if (roles) ensure(roles.includes(user.role), 'Ma lihid oggolaanshaha hawshan', 403);
   return user;
 }
-export async function createSession(subjectId: string, kind: 'staff' | 'customer') {
+export async function createSession(
+  subjectId: string,
+  kind: 'staff' | 'customer',
+  userAgent?: string | null,
+) {
   sessionSecret();
   const token = randomBytes(32).toString('hex');
   await db.authSession.create({
@@ -63,6 +82,7 @@ export async function createSession(subjectId: string, kind: 'staff' | 'customer
       kind,
       tokenHash: digest(token),
       expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 12),
+      userAgent: userAgent ? userAgent.slice(0, 300) : null,
     },
   });
   return `botan_session=${token}; HttpOnly; Path=/; SameSite=Lax; Max-Age=43200${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`;

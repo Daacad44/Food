@@ -2,6 +2,7 @@ import type { Metadata } from 'next';
 import './globals.css';
 import './staff.css';
 import './delivery.css';
+import './users.css';
 import { StoreProvider } from '@/components/store';
 export const metadata: Metadata = {
   title: { default: 'Botan · Delivery', template: '%s · Botan' },

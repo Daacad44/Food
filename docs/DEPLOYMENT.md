@@ -34,6 +34,7 @@ Do not deploy the local embedded PostgreSQL process to Vercel. No Redis or persi
 ## Verify the hosted deployment
 
 - `/api/v1/health` must report a connected database.
+- Open **Isticmaalayaasha**, add an order taker and a rider with temporary passwords, and sign in as each once to set their own passwords.
 - Sign in: you land on **Dalab cusub**. Take a small delivery order (phone, address, items) and **Save & Print**.
 - Open **Dalabyada**: it is under _Pending_. Assign a test rider; it moves to _Assigned_.
 - Sign in as that rider on a phone, open the order and confirm delivery with payment collected; it moves to _Delivered_.

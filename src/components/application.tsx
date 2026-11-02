@@ -2,6 +2,7 @@
 import { LoginPage, Loading } from './shared';
 import { OrderEntry } from './order-entry';
 import { OrderDetail, OrdersBoard } from './orders-board';
+import { AccountPage, UserDetail, UsersPage } from './users';
 import {
   StaffShell,
   Dashboard,
@@ -20,8 +21,11 @@ export function Application({ path }: { path: string }) {
   const part = path.split('/').filter(Boolean);
   let content: React.ReactNode;
   if (part[0] === 'rider') content = <Rider section={part[1] || 'assigned'} />;
+  else if (part[0] === 'account') content = <AccountPage />;
   else if (part[0] !== 'admin') content = <div className="empty">Boggan lama helin.</div>;
   else if (path === '/admin') content = <Dashboard />;
+  else if ((part[1] === 'users' || part[1] === 'staff') && !part[2]) content = <UsersPage />;
+  else if (part[1] === 'users') content = <UserDetail id={part[2]} />;
   else if (part[1] === 'orders' && part[2] === 'new') content = <OrderEntry />;
   else if (part[1] === 'orders' && part[2]) content = <OrderDetail id={part[2]} />;
   else if (part[1] === 'orders') content = <OrdersBoard />;
@@ -32,9 +36,7 @@ export function Application({ path }: { path: string }) {
   else if (part[1] === 'delivery' && part[2] === 'zones')
     content = <ResourcePage resource="zones" />;
   else if (
-    ['menu', 'categories', 'modifiers', 'inventory', 'suppliers', 'expenses', 'staff'].includes(
-      part[1],
-    )
+    ['menu', 'categories', 'modifiers', 'inventory', 'suppliers', 'expenses'].includes(part[1])
   )
     content = <ResourcePage resource={part[1]} />;
   else if (['audit', 'audit-logs', 'notifications'].includes(part[1]))
