@@ -984,6 +984,65 @@ CREATE INDEX "OutboxEvent_topic_status_idx" ON "OutboxEvent"("topic", "status");
 END
 $botan_migration$;
 
+DO $botan_migration$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611020001_delivery_only' AND rolled_back_at IS NULL AND finished_at IS NULL) THEN
+    RAISE EXCEPTION 'Unfinished migration: 202611020001_delivery_only. Resolve it before running setup.';
+  ELSIF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611020001_delivery_only' AND rolled_back_at IS NULL AND finished_at IS NOT NULL) THEN
+    IF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611020001_delivery_only' AND rolled_back_at IS NULL AND checksum <> 'c96e67137ae3ed0c1ca46d1e53f19bb5da804ed5afbe9eb6123050d20eb71a92') THEN
+      RAISE EXCEPTION 'Migration checksum mismatch: 202611020001_delivery_only. No changes applied.';
+    END IF;
+    RAISE NOTICE 'Already applied: 202611020001_delivery_only';
+  ELSE
+-- Botan becomes a staff-only, delivery-only ordering system.
+-- Removed: DaljirConnect (WhatsApp) integration, the kitchen board and POS (dining tables, cashier
+-- shifts), the customer website (reviews, saved addresses) and coupons.
+
+-- DaljirConnect
+DELETE FROM "OutboxEvent" WHERE "topic" LIKE 'daljir.%';
+DROP INDEX IF EXISTS "OutboxEvent_topic_status_idx";
+ALTER TABLE "OutboxEvent" DROP COLUMN IF EXISTS "lastError";
+DROP INDEX IF EXISTS "Order_externalRef_key";
+ALTER TABLE "Order" DROP COLUMN IF EXISTS "channel";
+ALTER TABLE "Order" DROP COLUMN IF EXISTS "externalRef";
+
+-- Dining tables, cashier shifts, reviews, saved addresses and coupons
+ALTER TABLE "Order" DROP CONSTRAINT IF EXISTS "Order_tableId_fkey";
+ALTER TABLE "Order" DROP COLUMN "tableId";
+ALTER TABLE "Order" DROP CONSTRAINT IF EXISTS "Order_couponId_fkey";
+ALTER TABLE "Order" DROP COLUMN "couponId";
+ALTER TABLE "Payment" DROP COLUMN "shiftId";
+DROP TABLE "DiningTable";
+DROP TABLE "CashierShift";
+DROP TABLE "Review";
+DROP TABLE "CustomerAddress";
+DROP TABLE "Coupon";
+DROP TYPE "TableStatus";
+DROP TYPE "ShiftStatus";
+DROP TYPE "DiscountType";
+
+-- Staff roles: the cashier role becomes the order taker (OPERATOR); the kitchen role is removed.
+-- Former kitchen accounts are kept for the audit trail but suspended and signed out, so they gain
+-- no ordering access until an owner reviews them.
+UPDATE "StaffUser" SET "status" = 'SUSPENDED' WHERE "role" = 'CHEF';
+DELETE FROM "AuthSession"
+  WHERE "kind" = 'staff' AND "subjectId" IN (SELECT "id" FROM "StaffUser" WHERE "role" = 'CHEF');
+ALTER TYPE "StaffRole" RENAME TO "StaffRole_old";
+CREATE TYPE "StaffRole" AS ENUM ('OWNER', 'MANAGER', 'OPERATOR', 'RIDER', 'ACCOUNTANT');
+ALTER TABLE "StaffUser" ALTER COLUMN "role" TYPE "StaffRole" USING (
+  CASE "role"::text WHEN 'CASHIER' THEN 'OPERATOR' WHEN 'CHEF' THEN 'OPERATOR' ELSE "role"::text END
+)::"StaffRole";
+DROP TYPE "StaffRole_old";
+
+-- Order-taking captures the payer's phone for EVC Plus / ZAAD / SAHAL (manual for now).
+CREATE INDEX "Order_guestPhone_idx" ON "Order"("guestPhone");
+
+    INSERT INTO public."_prisma_migrations" (id, checksum, finished_at, migration_name, applied_steps_count)
+    VALUES (gen_random_uuid()::text, 'c96e67137ae3ed0c1ca46d1e53f19bb5da804ed5afbe9eb6123050d20eb71a92', now(), '202611020001_delivery_only', 1);
+  END IF;
+END
+$botan_migration$;
+
 ALTER TABLE public."_prisma_migrations" ENABLE ROW LEVEL SECURITY;
 COMMIT;
 SELECT migration_name, finished_at FROM public."_prisma_migrations" WHERE rolled_back_at IS NULL ORDER BY migration_name;

@@ -1,7 +1,8 @@
 import { beforeAll, afterAll, describe, it, expect } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { db } from '../src/lib/db';
-import { createOrder, quote, restaurant, transitionOrder } from '../src/lib/orders';
+import { assignRider, createOrder, quote, restaurant, transitionOrder } from '../src/lib/orders';
+import { completeDelivery, createRider } from '../src/lib/delivery';
 import {
   capturePayment,
   refundPayment,
@@ -10,22 +11,23 @@ import {
   receivePurchase,
   finance,
   processOutbox,
-  openShift,
-  closeShift,
 } from '../src/lib/operations';
-import { createSession, passwordHash, type Actor } from '../src/lib/security';
+import { passwordHash, type Actor } from '../src/lib/security';
 import { POST, GET, PATCH, DELETE } from '../src/app/api/v1/[...path]/route';
-import type { CheckoutInput } from '../src/lib/domain';
+import type { StaffOrderInput } from '../src/lib/domain';
+const PASSWORD = 'IntegrationTest!Password26';
 let owner: Actor,
-  chef: Actor,
+  manager: Actor,
+  operator: Actor,
+  accountant: Actor,
   rider: Actor,
   otherRider: Actor,
-  cashier: Actor,
   burger: any,
   r: any,
   stock: any;
 let ownerCookie = '',
-  chefCookie = '',
+  operatorCookie = '',
+  accountantCookie = '',
   riderCookie = '';
 async function call(
   path: string,
@@ -41,206 +43,271 @@ async function call(
   });
   const handler =
     method === 'GET' ? GET : method === 'PATCH' ? PATCH : method === 'DELETE' ? DELETE : POST;
-  return handler(request, { params: Promise.resolve({ path: path.split('/') }) });
+  return handler(request, {
+    params: Promise.resolve({ path: path.split('?')[0].split('/') }),
+  });
 }
-const input = (): CheckoutInput => ({
+/** One $7.50 burger, 5% VAT, $1 delivery: $8.88 (7.50 + 0.38 + 1.00). */
+const input = (extra: Partial<StaffOrderInput> = {}): StaffOrderInput => ({
   items: [{ menuItemId: burger.id, quantity: 1, modifierOptionIds: [], specialInstructions: '' }],
-  type: 'PICKUP',
-  guestName: 'Integration Guest',
-  guestPhone: '+252610001234',
+  customerName: 'Integration Guest',
+  customerPhone: '+252610001234',
+  deliveryAddress: 'Bakaaro, near the market',
+  deliveryFee: 1,
+  discountPercent: 0,
+  withVat: true,
+  paymentMethod: 'CASH',
+  paid: false,
+  ...extra,
 });
-async function login(email: string, password: string) {
-  const res = await call('auth/staff/login', 'POST', { email, password });
+const reload = (id: string) =>
+  db.order.findUniqueOrThrow({ where: { id }, include: { delivery: true, payments: true } });
+async function login(email: string) {
+  const res = await call('auth/staff/login', 'POST', { email, password: PASSWORD });
   expect(res.status).toBe(200);
   return res.headers.get('set-cookie')!.split(';')[0];
 }
 beforeAll(async () => {
   r = await restaurant();
   await db.restaurant.update({ where: { id: r.id }, data: { isAcceptingOrders: true } });
-  for (let dayOfWeek = 0; dayOfWeek < 7; dayOfWeek++)
-    await db.openingHour.updateMany({
-      where: { restaurantId: r.id, dayOfWeek },
-      data: { opensAt: '00:00', closesAt: '23:59', isClosed: false },
-    });
+  await db.restaurantSettings.update({ where: { restaurantId: r.id }, data: { taxRate: 5 } });
   burger = await db.menuItem.findUniqueOrThrow({
     where: { restaurantId_slug: { restaurantId: r.id, slug: 'beef-burger' } },
   });
   stock = await db.inventoryItem.findFirstOrThrow({
     where: { restaurantId: r.id, name: 'Burger patties' },
   });
-  const password = 'IntegrationTest!Password26';
+  const hash = await passwordHash(PASSWORD);
   for (const [email, role] of [
     ['test-owner@botan.local', 'OWNER'],
-    ['test-chef@botan.local', 'CHEF'],
+    ['test-manager@botan.local', 'MANAGER'],
+    ['test-operator@botan.local', 'OPERATOR'],
+    ['test-accountant@botan.local', 'ACCOUNTANT'],
     ['test-rider@botan.local', 'RIDER'],
     ['other-rider@botan.local', 'RIDER'],
-    ['test-cashier@botan.local', 'CASHIER'],
-  ] as const) {
+  ] as const)
     await db.staffUser.upsert({
       where: { email },
       update: {},
-      create: {
-        restaurantId: r.id,
-        email,
-        role,
-        fullName: role,
-        passwordHash: await passwordHash(password),
-      },
+      create: { restaurantId: r.id, email, role, fullName: role, passwordHash: hash },
     });
-  }
-  async function staff(email: string): Promise<Actor> {
+  const staff = async (email: string): Promise<Actor> => {
     const u = await db.staffUser.findUniqueOrThrow({ where: { email } });
     return { id: u.id, role: u.role, name: u.fullName, kind: 'staff', restaurantId: r.id };
-  }
+  };
   owner = await staff('test-owner@botan.local');
-  chef = await staff('test-chef@botan.local');
+  manager = await staff('test-manager@botan.local');
+  operator = await staff('test-operator@botan.local');
+  accountant = await staff('test-accountant@botan.local');
   rider = await staff('test-rider@botan.local');
   otherRider = await staff('other-rider@botan.local');
-  cashier = await staff('test-cashier@botan.local');
-  ownerCookie = await login('test-owner@botan.local', password);
-  chefCookie = await login('test-chef@botan.local', password);
-  riderCookie = await login('test-rider@botan.local', password);
+  ownerCookie = await login('test-owner@botan.local');
+  operatorCookie = await login('test-operator@botan.local');
+  accountantCookie = await login('test-accountant@botan.local');
+  riderCookie = await login('test-rider@botan.local');
 });
 afterAll(async () => {
   await db.$disconnect();
 });
-describe('real PostgreSQL ordering and accounting', () => {
-  it('quotes authoritative prices and rejects a forged modifier', async () => {
-    const q = await quote(db, input());
-    expect(q.total).toBe(750);
+
+describe('taking a delivery order', () => {
+  it('prices on the server: VAT, percentage discount, staff delivery fee', async () => {
+    expect((await quote(db, input())).total).toBe(888);
+    const q = await quote(db, input({ discountPercent: 10, withVat: false, deliveryFee: 0 }));
+    expect([q.subtotal, q.discount, q.tax, q.total]).toEqual([750, 75, 0, 675]);
+    const zone = await db.deliveryZone.findFirstOrThrow({ where: { restaurantId: r.id } });
+    const zoned = await quote(db, input({ deliveryFee: undefined, zoneId: zone.id }));
+    expect(zoned.deliveryFee).toBe(Math.round(Number(zone.deliveryFee) * 100));
     await expect(
-      quote(db, {
-        ...input(),
-        items: [{ ...input().items[0], modifierOptionIds: [randomUUID()] }],
-      }),
+      quote(db, input({ items: [{ ...input().items[0], modifierOptionIds: [randomUUID()] }] })),
     ).rejects.toThrow('Invalid modifier');
   });
-  it('creates one order under concurrent retries and hides customer details in tracking', async () => {
+  it('creates a confirmed, pending order once under concurrent retries', async () => {
     const key = randomUUID(),
       payload = input();
-    const results = await Promise.all([
-      createOrder(payload, key, null),
-      createOrder(payload, key, null),
+    const [a, b] = await Promise.all([
+      createOrder(payload, key, operator),
+      createOrder(payload, key, operator),
     ]);
-    expect(results[0].id).toBe(results[1].id);
-    expect(await db.order.count({ where: { id: results[0].id } })).toBe(1);
-    const res = await call('orders/track/' + results[0].token);
-    expect(res.status).toBe(200);
-    const data = await res.json();
-    expect(data.total).toBe('7.5');
-    expect(data).not.toHaveProperty('guestPhone');
-    expect(data).not.toHaveProperty('deliveryAddress');
-    expect(data).not.toHaveProperty('trackingTokenHash');
+    expect(a.id).toBe(b.id);
+    const o = await reload(a.id);
+    expect(o.status).toBe('CONFIRMED');
+    expect(o.type).toBe('DELIVERY');
+    expect(o.delivery?.status).toBe('PENDING');
+    expect(o.stockDeducted).toBe(true);
+    expect(o.handledById).toBe(operator.id);
+    expect(Number(o.total)).toBe(8.88);
   });
-  it('rejects idempotency key reuse with a changed payload', async () => {
+  it('rejects idempotency key reuse with a changed payload and stale totals', async () => {
     const key = randomUUID();
-    await createOrder(input(), key, null);
-    await expect(createOrder({ ...input(), guestName: 'Someone else' }, key, null)).rejects.toThrow(
+    await createOrder(input(), key, operator);
+    await expect(createOrder(input({ customerName: 'Changed' }), key, operator)).rejects.toThrow(
       'Idempotency',
     );
+    await expect(createOrder(input(), randomUUID(), operator, 1)).rejects.toThrow('Hubi wadarta');
   });
-  it('deducts inventory once, rejects duplicate confirmation and restores stock on cancel', async () => {
-    const before = await db.inventoryItem.findUniqueOrThrow({ where: { id: stock.id } }),
-      o = await createOrder(input(), randomUUID(), null);
-    await transitionOrder(o.id, 'CONFIRMED', owner);
-    expect(
-      Number(
-        (await db.inventoryItem.findUniqueOrThrow({ where: { id: stock.id } })).quantityOnHand,
-      ),
-    ).toBe(Number(before.quantityOnHand) - 1);
-    await expect(transitionOrder(o.id, 'CONFIRMED', owner)).rejects.toThrow();
-    await transitionOrder(o.id, 'CANCELLED', owner);
-    expect(
-      Number(
-        (await db.inventoryItem.findUniqueOrThrow({ where: { id: stock.id } })).quantityOnHand,
-      ),
-    ).toBe(Number(before.quantityOnHand));
-    expect(await db.inventoryMovement.count({ where: { referenceId: o.id } })).toBe(2);
+  it('lets only owners, managers and order takers take orders', async () => {
+    await createOrder(input(), randomUUID(), manager);
+    for (const who of [accountant, rider])
+      await expect(createOrder(input(), randomUUID(), who)).rejects.toThrow('oggolaanshaha');
   });
-  it('rejects insufficient stock without partially confirming an order', async () => {
-    const o = await createOrder(input(), randomUUID(), null),
-      before = await db.inventoryItem.findUniqueOrThrow({ where: { id: stock.id } });
-    await db.inventoryItem.update({ where: { id: stock.id }, data: { quantityOnHand: 0 } });
-    await expect(transitionOrder(o.id, 'CONFIRMED', owner)).rejects.toThrow('Insufficient');
-    expect((await db.order.findUniqueOrThrow({ where: { id: o.id } })).status).toBe(
-      'PENDING_APPROVAL',
+  it('records mobile money: method and payer number, paid or not yet', async () => {
+    await expect(
+      createOrder(input({ paymentMethod: 'EVC_PLUS' }), randomUUID(), operator),
+    ).rejects.toThrow('telefoonka');
+    const paid = await createOrder(
+      input({ paymentMethod: 'ZAAD', paymentPhone: '+252634000111', paid: true }),
+      randomUUID(),
+      operator,
     );
-    await db.inventoryItem.update({
-      where: { id: stock.id },
-      data: { quantityOnHand: before.quantityOnHand },
+    const o = await reload(paid.id);
+    expect(o.paymentStatus).toBe('PAID');
+    expect(o.payments[0]).toMatchObject({
+      method: 'ZAAD',
+      providerReference: '+252634000111',
+      status: 'PAID',
+      provider: 'manual',
     });
   });
-  it('handles kitchen preparation, cash capture, completion, partial and full refunds', async () => {
-    const o = await createOrder(input(), randomUUID(), null);
-    await transitionOrder(o.id, 'CONFIRMED', owner);
-    await transitionOrder(o.id, 'PREPARING', chef);
-    await transitionOrder(o.id, 'READY', chef);
-    await expect(transitionOrder(o.id, 'COMPLETED', owner)).rejects.toThrow('Collect payment');
-    const p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
-    await capturePayment(p.id, owner);
-    await capturePayment(p.id, owner);
-    await transitionOrder(o.id, 'COMPLETED', owner);
+  it('deducts stock once and returns it when a manager cancels', async () => {
+    const before = Number(
+      (await db.inventoryItem.findUniqueOrThrow({ where: { id: stock.id } })).quantityOnHand,
+    );
+    const o = await createOrder(input(), randomUUID(), operator);
+    const after = Number(
+      (await db.inventoryItem.findUniqueOrThrow({ where: { id: stock.id } })).quantityOnHand,
+    );
+    expect(after).toBe(before - 1);
+    await expect(transitionOrder(o.id, 'CANCELLED', operator)).rejects.toThrow('Maamulaha');
+    await transitionOrder(o.id, 'CANCELLED', manager);
+    expect(
+      Number(
+        (await db.inventoryItem.findUniqueOrThrow({ where: { id: stock.id } })).quantityOnHand,
+      ),
+    ).toBe(before);
+    expect((await reload(o.id)).delivery?.status).toBe('FAILED');
+    await expect(transitionOrder(o.id, 'CANCELLED', manager)).rejects.toThrow('Invalid');
+  });
+  it('rejects an order larger than the stock without changing anything', async () => {
+    const count = await db.order.count();
+    await expect(
+      createOrder(
+        input({ items: [{ ...input().items[0], quantity: 100 }] }),
+        randomUUID(),
+        operator,
+      ),
+    ).rejects.toThrow('Stock');
+    await db.inventoryItem.update({ where: { id: stock.id }, data: { quantityOnHand: 100 } });
+    expect(await db.order.count()).toBe(count);
+  });
+});
+
+describe('riders and delivery', () => {
+  it('assigns at order time: the order goes straight out for delivery', async () => {
+    const o = await createOrder(input({ riderId: rider.id }), randomUUID(), operator);
+    const saved = await reload(o.id);
+    expect(saved.status).toBe('OUT_FOR_DELIVERY');
+    expect(saved.delivery).toMatchObject({ riderId: rider.id, status: 'ASSIGNED' });
+  });
+  it('assigns and re-assigns pending orders, audited, and refuses inactive riders', async () => {
+    const o = await createOrder(input(), randomUUID(), operator);
+    await assignRider(o.id, rider.id, operator);
+    await assignRider(o.id, otherRider.id, operator);
+    const saved = await reload(o.id);
+    expect(saved.status).toBe('OUT_FOR_DELIVERY');
+    expect(saved.delivery?.riderId).toBe(otherRider.id);
+    expect(
+      await db.auditLog.count({
+        where: { entityId: saved.delivery!.id, action: 'REASSIGN_RIDER' },
+      }),
+    ).toBe(1);
+    const suspended = await createRider(
+      { fullName: 'Suspended Rider', email: `s-${randomUUID()}@botan.local`, password: PASSWORD },
+      owner,
+    );
+    await db.staffUser.update({ where: { id: suspended.id }, data: { status: 'SUSPENDED' } });
+    await expect(assignRider(o.id, suspended.id, operator)).rejects.toThrow('Darawalka');
+    await expect(assignRider(o.id, operator.id, operator)).rejects.toThrow('Darawalka');
+    await expect(assignRider(o.id, rider.id, accountant)).rejects.toThrow('Permission');
+  });
+  it('lets only managers create riders, always with the rider role', async () => {
+    await expect(
+      createRider(
+        { fullName: 'X', email: `x-${randomUUID()}@botan.local`, password: PASSWORD },
+        operator,
+      ),
+    ).rejects.toThrow('Permission');
+    await expect(
+      createRider(
+        {
+          fullName: 'Rider',
+          email: `r-${randomUUID()}@botan.local`,
+          password: PASSWORD,
+          role: 'OWNER',
+        },
+        owner,
+      ),
+    ).rejects.toThrow();
+  });
+  it('lets only the assigned rider complete, with payment confirmation, once', async () => {
+    const o = await createOrder(
+      input({ paymentMethod: 'EVC_PLUS', paymentPhone: '+252615442493', riderId: rider.id }),
+      randomUUID(),
+      operator,
+    );
+    await expect(
+      completeDelivery(o.id, { proofNote: 'Delivered', confirmPaymentCollected: true }, otherRider),
+    ).rejects.toThrow('access denied');
+    await expect(completeDelivery(o.id, { proofNote: 'Delivered' }, rider)).rejects.toThrow(
+      'lacagta',
+    );
+    const body = { proofNote: 'Handed to customer', confirmPaymentCollected: true };
+    await Promise.all([completeDelivery(o.id, body, rider), completeDelivery(o.id, body, rider)]);
+    const saved = await reload(o.id);
+    expect(saved.status).toBe('COMPLETED');
+    expect(saved.paymentStatus).toBe('PAID');
+    expect(saved.delivery?.status).toBe('DELIVERED');
+    expect(saved.payments.filter((p) => p.paidAt)).toHaveLength(1);
+    expect(saved.payments[0].method).toBe('EVC_PLUS');
+  });
+  it('lets an order taker confirm delivery when the rider has no app', async () => {
+    const o = await createOrder(input({ paid: true }), randomUUID(), operator);
+    await completeDelivery(o.id, { proofNote: 'Rider phoned it in' }, operator);
+    expect((await reload(o.id)).status).toBe('COMPLETED');
+    await expect(assignRider(o.id, rider.id, operator)).rejects.toThrow('looma qoondeyn');
+  });
+  it('captures split payments and switches method by hand', async () => {
+    const o = await createOrder(input(), randomUUID(), operator),
+      p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
+    await capturePayment(p.id, operator, { amount: 3 });
+    expect((await reload(o.id)).paymentStatus).toBe('PENDING');
+    const rest = await db.payment.findFirstOrThrow({ where: { orderId: o.id, status: 'PENDING' } });
+    expect(Number(rest.amount)).toBe(5.88);
+    await expect(capturePayment(rest.id, operator, { method: 'SAHAL' })).rejects.toThrow(
+      'telefoonka',
+    );
+    await capturePayment(rest.id, operator, { method: 'SAHAL', reference: '+252907000000' });
+    expect((await reload(o.id)).paymentStatus).toBe('PAID');
+    const captured = await db.payment.findUniqueOrThrow({ where: { id: rest.id } });
+    expect(captured).toMatchObject({ method: 'SAHAL', providerReference: '+252907000000' });
+  });
+});
+
+describe('back office', () => {
+  it('refunds partially and fully, idempotently', async () => {
+    const o = await createOrder(input({ paid: true }), randomUUID(), operator),
+      p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
     const key = randomUUID();
     const refund = await refundPayment(p.id, { amount: 2, reason: 'Test partial' }, key, owner);
     expect((await refundPayment(p.id, { amount: 2, reason: 'Test partial' }, key, owner)).id).toBe(
       refund.id,
     );
-    expect((await db.order.findUniqueOrThrow({ where: { id: o.id } })).paymentStatus).toBe(
-      'PARTIALLY_REFUNDED',
-    );
+    expect((await reload(o.id)).paymentStatus).toBe('PARTIALLY_REFUNDED');
     await expect(
-      refundPayment(p.id, { amount: 6, reason: 'Too much' }, randomUUID(), owner),
+      refundPayment(p.id, { amount: 7, reason: 'Too much' }, randomUUID(), owner),
     ).rejects.toThrow('exceeds');
-    await refundPayment(p.id, { amount: 5.5, reason: 'Remaining cash' }, randomUUID(), owner);
-    expect((await db.order.findUniqueOrThrow({ where: { id: o.id } })).paymentStatus).toBe(
-      'REFUNDED',
-    );
-  });
-  it('restricts kitchen transitions and rider ownership', async () => {
-    const zone = await db.deliveryZone.findFirstOrThrow({ where: { restaurantId: r.id } }),
-      o = await createOrder(
-        {
-          ...input(),
-          type: 'DELIVERY',
-          zoneId: zone.id,
-          deliveryAddress: 'Mogadishu test address',
-        },
-        randomUUID(),
-        null,
-      );
-    await expect(transitionOrder(o.id, 'CONFIRMED', chef)).rejects.toThrow('Kitchen');
-    await transitionOrder(o.id, 'CONFIRMED', owner);
-    await transitionOrder(o.id, 'PREPARING', chef);
-    await transitionOrder(o.id, 'READY', chef);
-    await db.delivery.update({
-      where: { orderId: o.id },
-      data: { riderId: rider.id, status: 'ASSIGNED' },
-    });
-    await expect(transitionOrder(o.id, 'OUT_FOR_DELIVERY', otherRider)).rejects.toThrow('denied');
-    await transitionOrder(o.id, 'OUT_FOR_DELIVERY', rider);
-    const p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
-    await capturePayment(p.id, rider);
-    await transitionOrder(o.id, 'COMPLETED', rider, 'Handed directly to customer');
-    expect((await db.delivery.findUniqueOrThrow({ where: { orderId: o.id } })).status).toBe(
-      'DELIVERED',
-    );
-  });
-  it('caps coupons and restores usage after cancellation', async () => {
-    const before = await db.coupon.findUniqueOrThrow({
-      where: { restaurantId_code: { restaurantId: r.id, code: 'BOTAN10' } },
-    });
-    const payload = {
-      ...input(),
-      items: [{ ...input().items[0], quantity: 2 }],
-      couponCode: 'BOTAN10',
-    };
-    const q = await quote(db, payload);
-    expect(q.discount).toBe(150);
-    const o = await createOrder(payload, randomUUID(), null);
-    await transitionOrder(o.id, 'REJECTED', owner);
-    expect((await db.coupon.findUniqueOrThrow({ where: { id: before.id } })).usedCount).toBe(
-      before.usedCount,
-    );
+    await refundPayment(p.id, { amount: 6.88, reason: 'Remaining' }, randomUUID(), owner);
+    expect((await reload(o.id)).paymentStatus).toBe('REFUNDED');
   });
   it('receives a purchase only once and records the stock ledger', async () => {
     const supplier = await db.supplier.create({
@@ -264,22 +331,14 @@ describe('real PostgreSQL ordering and accounting', () => {
     ).toBe(Number(before.quantityOnHand) + 10);
     expect(await db.inventoryMovement.count({ where: { referenceId: p.id } })).toBe(1);
   });
-  it('rejects negative inventory and closes shifts against cash captures', async () => {
-    await expect(
+  it('rejects negative inventory', async () =>
+    expect(
       stockMovement(
         { inventoryItemId: stock.id, type: 'WASTE', quantityDelta: -10000, notes: 'Test waste' },
         owner,
       ),
-    ).rejects.toThrow('negative');
-    const shift = await openShift({ openingCash: 20 }, cashier);
-    await expect(openShift({ openingCash: 0 }, cashier)).rejects.toThrow();
-    const o = await createOrder(input(), randomUUID(), null),
-      p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
-    await capturePayment(p.id, cashier);
-    const closed = await closeShift(shift.id, { actualClosingCash: 27.5 }, cashier);
-    expect(Number(closed.expectedCash)).toBe(27.5);
-  });
-  it('reconciles finance to captures less refunds', async () => {
+    ).rejects.toThrow('negative'));
+  it('reconciles finance to captures less refunds, by payment method', async () => {
     const summary = await finance(r.id);
     const p = await db.payment.findMany({
       where: { order: { restaurantId: r.id }, paidAt: { not: null } },
@@ -289,136 +348,174 @@ describe('real PostgreSQL ordering and accounting', () => {
       (sum, p) => sum + Number(p.amount) - p.refunds.reduce((s, r) => s + Number(r.amount), 0),
       0,
     );
-    expect(summary.netSales).toBe(expected);
-    expect(summary.days.reduce((s, d) => s + d.amount, 0)).toBe(expected);
-  });
-  it('supports split cash tenders without prematurely marking the order paid', async () => {
-    const o = await createOrder(input(), randomUUID(), null),
-      p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
-    await capturePayment(p.id, owner, 3);
-    expect((await db.order.findUniqueOrThrow({ where: { id: o.id } })).paymentStatus).toBe(
-      'PENDING',
+    expect(summary.netSales).toBeCloseTo(expected, 2);
+    expect(summary.byMethod.reduce((s, m) => s + m.amount, 0)).toBeCloseTo(expected, 2);
+    expect(summary.byMethod.map((m) => m.method)).toEqual(
+      expect.arrayContaining(['ZAAD', 'EVC_PLUS', 'SAHAL', 'CASH']),
     );
-    const remaining = await db.payment.findFirstOrThrow({
-      where: { orderId: o.id, status: 'PENDING' },
-    });
-    expect(Number(remaining.amount)).toBe(4.5);
-    await capturePayment(remaining.id, owner);
-    expect((await db.order.findUniqueOrThrow({ where: { id: o.id } })).paymentStatus).toBe('PAID');
-    await refundPayment(p.id, { amount: 3, reason: 'Split tender refund' }, randomUUID(), owner);
-    expect((await db.order.findUniqueOrThrow({ where: { id: o.id } })).paymentStatus).toBe(
-      'PARTIALLY_REFUNDED',
-    );
-  });
-  it('rejects a changed reviewed price and non-cashier staff ordering', async () => {
-    await expect(createOrder(input(), randomUUID(), null, 1)).rejects.toThrow('pricing changed');
-    await expect(createOrder(input(), randomUUID(), chef)).rejects.toThrow('Only cashiers');
   });
   it('delivers durable outbox events once', async () => {
     const first = await processOutbox(),
-      count = await db.notification.count(),
       second = await processOutbox();
     expect(first.processed).toBeGreaterThan(0);
     expect(second.processed).toBe(0);
-    expect(await db.notification.count()).toBe(count);
   });
 });
-describe('HTTP authorization, validation and sessions', () => {
-  it('blocks anonymous administration and cross-origin writes', async () => {
+
+describe('HTTP: authorization, the orders board and payments', () => {
+  it('blocks anonymous access, customers endpoints and cross-origin writes', async () => {
     expect((await call('admin/orders')).status).toBe(401);
+    expect((await call('menu/items')).status).toBe(401);
+    expect((await call('orders', 'POST', input())).status).toBe(401);
     expect(
-      (await call('orders', 'POST', input(), '', { origin: 'https://evil.invalid' })).status,
+      (await call('auth/customer/login', 'POST', { email: 'a@b.so', password: 'x' })).status,
+    ).toBe(404);
+    expect(
+      (await call('orders', 'POST', input(), operatorCookie, { origin: 'https://evil.invalid' }))
+        .status,
     ).toBe(403);
   });
-  it('denies kitchen finance access and redacts kitchen customer information', async () => {
-    expect((await call('admin/summary', 'GET', undefined, chefCookie)).status).toBe(403);
-    const result = await call('kitchen/orders', 'GET', undefined, chefCookie),
-      rows = await result.json();
-    expect(result.status).toBe(200);
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows[0]).not.toHaveProperty('guestPhone');
-    expect(rows[0]).not.toHaveProperty('payments');
+  it('signs an order taker in and lands them on order taking', async () => {
+    const res = await call('auth/staff/login', 'POST', {
+      email: 'test-operator@botan.local',
+      password: PASSWORD,
+    });
+    expect((await res.json()).role).toBe('OPERATOR');
+    expect((await call('menu/items', 'GET', undefined, operatorCookie)).status).toBe(200);
   });
-  it('shows a rider only assigned orders', async () => {
-    const result = await call('rider/orders', 'GET', undefined, riderCookie),
-      rows = await result.json();
-    expect(result.status).toBe(200);
-    expect(rows.length).toBeGreaterThan(0);
-    expect(rows.every((o: any) => o.delivery.riderId === rider.id)).toBe(true);
-  });
-  it('rejects price tampering and unauthenticated payment capture', async () => {
+  it('takes an order over HTTP with an idempotency key and the reviewed total', async () => {
+    const key = randomUUID();
+    const res = await call('orders', 'POST', input({ riderId: rider.id }), operatorCookie, {
+      'Idempotency-Key': key,
+      'X-Expected-Total': '8.88',
+    });
+    expect(res.status).toBe(201);
+    const again = await call('orders', 'POST', input({ riderId: rider.id }), operatorCookie, {
+      'Idempotency-Key': key,
+      'X-Expected-Total': '8.88',
+    });
+    expect((await again.json()).id).toBe((await res.json()).id);
     expect(
       (
-        await call('orders', 'POST', { ...input(), total: 0 }, '', {
+        await call('orders', 'POST', { ...input(), total: 0 }, operatorCookie, {
           'Idempotency-Key': randomUUID(),
         })
       ).status,
     ).toBe(400);
-    expect((await call('payments/' + randomUUID() + '/capture', 'POST', {})).status).toBe(401);
   });
-  it('refuses unconfigured provider callbacks rather than accepting unsigned payments', async () =>
-    expect((await call('webhooks/payments/evc', 'POST', {})).status).toBe(503));
-  it('keeps staff password hashes out of manager list responses', async () => {
-    const result = await call('admin/resources/staff', 'GET', undefined, ownerCookie),
-      rows = await result.json();
-    expect(result.status).toBe(200);
+  it('lists pending / assigned / delivered with counts, by day and by phone', async () => {
+    const phone = '+25261' + String(Date.now()).slice(-7);
+    const pending = await createOrder(input({ customerPhone: phone }), randomUUID(), operator);
+    const assigned = await createOrder(
+      input({ customerPhone: phone, riderId: rider.id }),
+      randomUUID(),
+      operator,
+    );
+    const day = new Intl.DateTimeFormat('en-CA', { timeZone: 'Africa/Mogadishu' }).format(
+      new Date(),
+    );
+    const res = await call(
+      `admin/orders?view=pending&from=${day}&to=${day}&q=${encodeURIComponent(phone)}`,
+      'GET',
+      undefined,
+      operatorCookie,
+    );
+    const data = await res.json();
+    expect(res.status).toBe(200);
+    expect(data.orders.map((o: any) => o.id)).toEqual([pending.id]);
+    expect(data.counts).toEqual({ pending: 1, assigned: 1, delivered: 0, cancelled: 0 });
+    const a = await (
+      await call(
+        `admin/orders?view=assigned&q=${encodeURIComponent(phone)}`,
+        'GET',
+        undefined,
+        operatorCookie,
+      )
+    ).json();
+    expect(a.orders[0].id).toBe(assigned.id);
+    expect(a.orders[0].delivery.rider.fullName).toBe('RIDER');
+    expect((await call('admin/orders?view=nope', 'GET', undefined, operatorCookie)).status).toBe(
+      400,
+    );
+  });
+  it('assigns over HTTP and lets accountants read but not change orders', async () => {
+    const o = await createOrder(input(), randomUUID(), operator);
+    expect(
+      (await call(`admin/orders/${o.id}/assign`, 'POST', { riderId: rider.id }, accountantCookie))
+        .status,
+    ).toBe(403);
+    expect(
+      (await call(`admin/orders/${o.id}/assign`, 'POST', { riderId: rider.id }, operatorCookie))
+        .status,
+    ).toBe(200);
+    expect((await call(`admin/orders/${o.id}`, 'GET', undefined, accountantCookie)).status).toBe(
+      200,
+    );
+    expect(
+      (await call(`admin/orders/${o.id}/status`, 'PATCH', { status: 'CANCELLED' }, operatorCookie))
+        .status,
+    ).toBe(403);
+  });
+  it('shows a rider only their own orders', async () => {
+    const res = await call('rider/orders', 'GET', undefined, riderCookie),
+      rows = await res.json();
+    expect(res.status).toBe(200);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.every((o: any) => o.delivery.riderId === rider.id)).toBe(true);
+    expect((await call('admin/orders', 'GET', undefined, riderCookie)).status).toBe(403);
+  });
+  it('fills in a returning customer from their last order', async () => {
+    const phone = '+25261' + String(Date.now() + 7).slice(-7);
+    await createOrder(
+      input({ customerPhone: phone, deliveryAddress: 'Hodan, KM4' }),
+      randomUUID(),
+      operator,
+    );
+    const found = await (
+      await call(
+        'customers/lookup?phone=' + encodeURIComponent(phone),
+        'GET',
+        undefined,
+        operatorCookie,
+      )
+    ).json();
+    expect(found).toMatchObject({ deliveryAddress: 'Hodan, KM4', orderCount: 1 });
+  });
+  it('fails closed for mobile-money automation until a provider is configured', async () => {
+    const o = await createOrder(
+      input({ paymentMethod: 'EVC_PLUS', paymentPhone: '+252615000000' }),
+      randomUUID(),
+      operator,
+    );
+    const p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
+    expect((await call(`payments/${p.id}/initialize`, 'POST', {}, operatorCookie)).status).toBe(
+      501,
+    );
+    expect((await call('webhooks/payments/evc_plus', 'POST', { status: 'PAID' })).status).toBe(501);
+    expect((await db.payment.findUniqueOrThrow({ where: { id: p.id } })).status).toBe('PENDING');
+    expect((await call('payments/' + p.id + '/capture', 'POST', {})).status).toBe(401);
+  });
+  it('keeps password hashes out of lists and only offers the new roles', async () => {
+    const rows = await (await call('admin/resources/staff', 'GET', undefined, ownerCookie)).json();
     expect(rows[0]).not.toHaveProperty('passwordHash');
+    const bad = await call(
+      'admin/resources/staff',
+      'POST',
+      {
+        fullName: 'Chef',
+        email: `c-${randomUUID()}@botan.local`,
+        role: 'CHEF',
+        password: PASSWORD,
+      },
+      ownerCookie,
+    );
+    expect(bad.status).toBe(400);
   });
   it('requires a valid session and invalidates it on logout', async () => {
-    const cookie = await login('test-chef@botan.local', 'IntegrationTest!Password26');
+    const cookie = await login('test-operator@botan.local');
     expect((await call('auth/me', 'GET', undefined, cookie)).status).toBe(200);
     await call('auth/logout', 'POST', {}, cookie);
-    expect((await call('kitchen/orders', 'GET', undefined, cookie)).status).toBe(401);
-  });
-  it('protects customer order and address ownership', async () => {
-    const phone = '+252' + Date.now().toString().slice(-9);
-    const response = await call('auth/customer/register', 'POST', {
-      fullName: 'Test customer',
-      phone,
-      email: randomUUID() + '@example.test',
-      password: 'CustomerPassword!2026',
-    });
-    expect(response.status).toBe(201);
-    const cookie = response.headers.get('set-cookie')!.split(';')[0];
-    const orders = await (await call('customers/me/orders', 'GET', undefined, cookie)).json();
-    expect(orders).toEqual([]);
-    const other = await db.customer.create({
-      data: {
-        restaurantId: r.id,
-        fullName: 'Other customer',
-        phone: '+252' + randomUUID().slice(0, 8),
-      },
-    });
-    const foreign = await db.customerAddress.create({
-      data: {
-        customerId: other.id,
-        district: 'Hodan',
-        description: 'Private address of another customer',
-      },
-    });
-    const deleted = await call('customers/me/addresses/' + foreign.id, 'DELETE', {}, cookie);
-    expect(deleted.status).toBe(404);
-    expect(await db.customerAddress.findUnique({ where: { id: foreign.id } })).not.toBeNull();
-  });
-  it('enforces rating and money constraints at the database layer', async () => {
-    await expect(
-      db.inventoryItem.update({ where: { id: stock.id }, data: { quantityOnHand: -1 } }),
-    ).rejects.toThrow();
-  });
-  it('accepts dine-in only with a valid table QR token', async () => {
-    await expect(createOrder({ ...input(), type: 'DINE_IN' }, randomUUID(), null)).rejects.toThrow(
-      'QR',
-    );
-    const table = await db.diningTable.findFirstOrThrow({ where: { restaurantId: r.id } });
-    const order = await createOrder(
-      { ...input(), type: 'DINE_IN', tableToken: table.qrToken },
-      randomUUID(),
-      null,
-    );
-    expect((await db.order.findUniqueOrThrow({ where: { id: order.id } })).tableId).toBe(table.id);
-    expect((await db.diningTable.findUniqueOrThrow({ where: { id: table.id } })).status).toBe(
-      'OCCUPIED',
-    );
+    expect((await call('admin/orders', 'GET', undefined, cookie)).status).toBe(401);
   });
   it('preserves omitted fields when editing a disabled menu item', async () => {
     await db.menuItem.update({ where: { id: burger.id }, data: { isAvailable: false } });
@@ -431,69 +528,5 @@ describe('HTTP authorization, validation and sessions', () => {
     expect(response.status).toBe(200);
     expect((await response.json()).isAvailable).toBe(false);
     await db.menuItem.update({ where: { id: burger.id }, data: { isAvailable: true } });
-  });
-  it('tracks delivery milestones without exposing rider identity, address or proof notes', async () => {
-    const zone = await db.deliveryZone.findFirstOrThrow({ where: { restaurantId: r.id } });
-    const o = await createOrder(
-      {
-        ...input(),
-        type: 'DELIVERY',
-        zoneId: zone.id,
-        deliveryAddress: 'Private delivery address',
-      },
-      randomUUID(),
-      null,
-    );
-    await db.delivery.update({
-      where: { orderId: o.id },
-      data: {
-        riderId: rider.id,
-        status: 'IN_TRANSIT',
-        assignedAt: new Date(),
-        pickedUpAt: new Date(),
-        proofNote: 'Private proof',
-      },
-    });
-    const response = await call('orders/track/' + o.token);
-    expect(response.status).toBe(200);
-    const view = await response.json();
-    expect(view.delivery.status).toBe('IN_TRANSIT');
-    expect(view.delivery.pickedUpAt).toBeTruthy();
-    expect(view.delivery).not.toHaveProperty('rider');
-    expect(view.delivery).not.toHaveProperty('riderId');
-    expect(view.delivery).not.toHaveProperty('proofNote');
-    expect(view).not.toHaveProperty('deliveryAddress');
-  });
-  it('allows account tracking only for the order owner', async () => {
-    const customer = await db.customer.create({
-      data: {
-        restaurantId: r.id,
-        fullName: 'Tracking customer',
-        phone: 'tracking-' + randomUUID(),
-      },
-    });
-    const user: Actor = {
-      id: customer.id,
-      restaurantId: r.id,
-      kind: 'customer',
-      role: 'CUSTOMER',
-      name: customer.fullName,
-    };
-    const o = await createOrder(input(), randomUUID(), user),
-      cookie = (await createSession(customer.id, 'customer')).split(';')[0];
-    const path = 'customers/me/orders/' + o.id + '/track';
-    expect((await call(path)).status).toBe(401);
-    const response = await call(path, 'GET', undefined, cookie);
-    expect(response.status).toBe(200);
-    expect((await response.json()).orderNumber).toBe(o.orderNumber);
-    const other = await db.customer.create({
-      data: {
-        restaurantId: r.id,
-        fullName: 'Other tracking customer',
-        phone: 'other-' + randomUUID(),
-      },
-    });
-    const foreignCookie = (await createSession(other.id, 'customer')).split(';')[0];
-    expect((await call(path, 'GET', undefined, foreignCookie)).status).toBe(404);
   });
 });

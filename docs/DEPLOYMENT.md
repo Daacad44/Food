@@ -26,9 +26,6 @@ Configure production and preview variables separately:
 | `CRON_SECRET`                   | Independent random secret for authenticated outbox maintenance                                   |
 | `OWNER_EMAIL`, `OWNER_PASSWORD` | Initial trusted seed only; not required for normal application runtime                           |
 | `BACKUP_KEY`                    | Independent 32-byte base64 encryption key for an external backup job                             |
-| `DALJIRCONNECT_URL`             | Optional. DaljirConnect base URL (e.g. `https://connect.daljir.tech`) for WhatsApp ordering      |
-| `DALJIRCONNECT_API_KEY`         | DaljirConnect API key (`dc_live_…`) — pushes status, payment and the menu                        |
-| `DALJIRCONNECT_WEBHOOK_SECRET`  | Secret of the DaljirConnect webhook that sends orders to `/api/v1/webhooks/daljirconnect`        |
 
 The `vercel.json` daily cron calls `/api/v1/internal/outbox`; Vercel attaches the configured cron authorization secret. Frequent updates in the UI use normal short-lived API requests. Increase notification processing frequency only when your Vercel plan supports it, or call the authenticated endpoint from a dedicated scheduler.
 
@@ -37,32 +34,20 @@ Do not deploy the local embedded PostgreSQL process to Vercel. No Redis or persi
 ## Verify the hosted deployment
 
 - `/api/v1/health` must report a connected database.
-- Open the customer menu, create a small pickup order, and save its private tracking link.
-- Sign in to the staff portal, confirm the order, move it through kitchen preparation and readiness, collect cash, then complete it.
-- Verify the receipt, stock ledger, audit log and net revenue.
-- Assign a delivery to a test rider and verify an unrelated rider cannot access it.
-- Review real prices, contact details, delivery zones, local opening hours, tax treatment, privacy/terms and food photography before enabling public ordering.
+- Sign in: you land on **Dalab cusub**. Take a small delivery order (phone, address, items) and **Save & Print**.
+- Open **Dalabyada**: it is under _Pending_. Assign a test rider; it moves to _Assigned_.
+- Sign in as that rider on a phone, open the order and confirm delivery with payment collected; it moves to _Delivered_.
+- Verify the receipt, stock ledger, audit log, payments by method and net revenue.
+- Review real prices, contact details, delivery zones (fees), VAT rate and food photography before going live.
 - Set up off-site backups, retention, monitoring and a scheduled restore exercise. Enable Supabase backups/PITR according to the selected plan.
 
-## Provider integrations
+## Payments: cash, EVC Plus, ZAAD, SAHAL
 
-Cash is implemented. Mobile money, card gateways, SMS, email and WhatsApp are not provisioned. Do not enable a payment method until an adapter validates raw-body signatures, enforces callback idempotency, verifies currency/amount/order ownership and reconciles refunds against actual provider responses. Never implement a webhook that trusts a client-provided `paid` flag.
+All four are recorded **manually** today: the order taker picks the method and the payer's phone, and the money is
+marked _La qaaday_ when it is counted or seen on the phone (at order time, from the order page, or by the rider on
+delivery). `src/lib/payments.ts` is the place to automate a provider later: implement its `PaymentProvider`
+(send the payment prompt, verify the signed callback) and register it. `POST /api/v1/payments/:id/initialize` and
+`POST /api/v1/webhooks/payments/:method` already route through it and answer 501 until a provider is configured.
+SMS, email and WhatsApp are not provisioned. Do not enable a payment method until an adapter validates raw-body signatures, enforces callback idempotency, verifies currency/amount/order ownership and reconciles refunds against actual provider responses. Never implement a webhook that trusts a client-provided `paid` flag.
 
 The system has not been deployed to a live Vercel/Supabase project in this session because those project credentials were unavailable.
-
-## WhatsApp ordering (DaljirConnect)
-
-Optional. The DaljirConnect WhatsApp assistant takes orders in chat; they arrive here as **Pending approval** orders
-marked _WhatsApp_, and every status change, cash payment and the order number go back to the customer.
-
-1. In DaljirConnect (Settings → POS & integrations): create an **API key**, then **Add POS address**
-   `https://<this site>/api/v1/webhooks/daljirconnect` (events `order.created`, `order.updated`) and copy its secret.
-   Turn off _auto-confirm_ in DaljirConnect's ordering settings so Botan's staff accept each order.
-2. Set `DALJIRCONNECT_URL`, `DALJIRCONNECT_API_KEY` and `DALJIRCONNECT_WEBHOOK_SECRET` here and redeploy.
-3. Apply the `202610240001_daljirconnect` migration (`npm run db:migrate`, or re-run `supabase/01-schema.sql`).
-4. Admin → Settings → **Sync menu now**. Later menu edits sync by themselves; SKU = the Botan menu item id.
-5. Press **Test** in DaljirConnect — the Botan settings panel lists every push and its result.
-
-Pushes are queued in the outbox inside the same transaction as the change and sent right after the response; staff
-boards polling and the cron retry failures. A delivery zone is picked from the address text (else the cheapest zone,
-flagged in the order notes), and a total that differs from the one quoted in chat is noted for the staff.

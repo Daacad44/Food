@@ -1,5 +1,13 @@
 # Validation report — 21 October 2026
 
+## Delivery-only rework — 2 November 2026
+
+- 37 unit and PostgreSQL integration tests and 6 desktop/mobile browser tests passed; TypeScript and the production build passed.
+- Integration tests cover server pricing (VAT, discount %, staff delivery fee), concurrent idempotent orders, stale totals, role limits (only owners/managers/order takers take orders, only managers cancel), manual EVC Plus / ZAAD / SAHAL records, stock deducted once and returned on cancel, rider assignment at order time and later (re-assignment audited, suspended riders refused), rider-only completion with payment confirmation under concurrent retries, staff completion, split payments with method change, refunds, purchases, finance by payment method, the Pending/Assigned/Delivered board with date and phone filters, customer lookup by phone, and mobile-money endpoints failing closed.
+- Browser journeys: sign in → order screen → take and price an order → save; create a rider, assign from the board, see it under Assigned; signed-out visitors only reach the login page.
+- The new migration was applied to a copy of the previous schema with demo data: tables, coupons, shifts and DaljirConnect columns removed, cashiers became order takers, kitchen accounts suspended.
+- Not run here: `prisma migrate deploy`/`migrate diff`, the Supabase SQL check and the backup restore check need the Prisma schema-engine binary, which this workspace could not download. Migrations were applied with an equivalent script; run those three checks in CI or locally.
+
 ## Driver assignment and completion fix — 24 October 2026
 
 - 57 unit/PostgreSQL integration tests and 18 desktop/mobile browser tests passed, including the existing DaljirConnect integration suite. Production build and TypeScript passed.

@@ -18,7 +18,11 @@ export default defineConfig({
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     launchOptions: {
-      ...(existsSync('/usr/bin/chromium') ? { executablePath: '/usr/bin/chromium' } : {}),
+      ...(existsSync('/usr/bin/chromium')
+        ? { executablePath: '/usr/bin/chromium' }
+        : existsSync('/usr/bin/google-chrome')
+          ? { executablePath: '/usr/bin/google-chrome' }
+          : {}),
     },
   },
   webServer: {

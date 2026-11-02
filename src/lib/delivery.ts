@@ -1,9 +1,9 @@
 import { z } from 'zod';
 import { ensure } from './errors';
-import { audit, event, transaction, transitionOrderInTransaction } from './orders';
+import { audit, transaction, transitionOrderInTransaction } from './orders';
 import { capturePaymentInTransaction } from './operations';
 import { money } from './domain';
-import { MANAGERS, passwordHash, type Actor } from './security';
+import { MANAGERS, ORDER_TAKERS, passwordHash, type Actor } from './security';
 
 export async function createRider(body: unknown, user: Actor) {
   ensure((MANAGERS as readonly string[]).includes(user.role), 'Permission denied', 403);
@@ -41,69 +41,43 @@ export async function createRider(body: unknown, user: Actor) {
   });
 }
 
-export async function assignRider(deliveryId: string, riderId: string, user: Actor) {
-  ensure((MANAGERS as readonly string[]).includes(user.role), 'Permission denied', 403);
-  return transaction(async (tx) => {
-    const delivery = await tx.delivery.findFirst({
-      where: { id: deliveryId, order: { restaurantId: user.restaurantId } },
-      include: { order: true },
-    });
-    ensure(delivery, 'Delivery not found', 404);
-    ensure(
-      ['PENDING', 'ASSIGNED'].includes(delivery.status) &&
-        !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(delivery.order.status),
-      'Delivery cannot be assigned',
-      409,
-    );
-    ensure(
-      await tx.staffUser.findFirst({
-        where: { id: riderId, restaurantId: user.restaurantId, role: 'RIDER', status: 'ACTIVE' },
-      }),
-      'Active rider not found',
-      404,
-    );
-    if (delivery.riderId === riderId) return delivery;
-    const result = await tx.delivery.update({
-      where: { id: deliveryId },
-      data: { riderId, status: 'ASSIGNED', assignedAt: new Date() },
-    });
-    await audit(tx, user, 'ASSIGN_RIDER', 'Delivery', deliveryId, { riderId });
-    await event(tx, user.restaurantId, 'delivery.assigned', { orderId: delivery.orderId, riderId });
-    return result;
-  });
-}
-
 export const completeDeliverySchema = z
   .object({
     proofNote: z.string().trim().min(3).max(500),
-    confirmCashCollected: z.boolean().default(false),
+    /** The rider or staff confirm the outstanding money was received (cash or mobile money). */
+    confirmPaymentCollected: z.boolean().default(false),
   })
   .strict();
+/**
+ * Marks a delivery order as delivered. A rider can complete only an order assigned to them; order
+ * takers and managers can also confirm it (e.g. a rider without the app). Money still owed must be
+ * explicitly confirmed and is captured in the same transaction.
+ */
 export async function completeDelivery(orderId: string, body: unknown, user: Actor) {
   const data = completeDeliverySchema.parse(body);
-  ensure(['OWNER', 'MANAGER', 'RIDER'].includes(user.role), 'Permission denied', 403);
+  const rider = user.role === 'RIDER';
+  ensure(
+    rider || (ORDER_TAKERS as readonly string[]).includes(user.role),
+    'Permission denied',
+    403,
+  );
   return transaction(async (tx) => {
     const order = await tx.order.findFirst({
       where: { id: orderId, restaurantId: user.restaurantId },
       include: { delivery: true, payments: { include: { refunds: true } } },
     });
     ensure(order && order.type === 'DELIVERY' && order.delivery, 'Delivery order not found', 404);
-    const rider = user.role === 'RIDER';
     if (rider) ensure(order.delivery.riderId === user.id, 'Delivery access denied', 403);
     if (order.status === 'COMPLETED') return order;
     ensure(
       rider
         ? order.status === 'OUT_FOR_DELIVERY'
-        : ['READY', 'OUT_FOR_DELIVERY'].includes(order.status),
-      'Delivery is not ready to complete',
+        : !['COMPLETED', 'CANCELLED', 'REJECTED'].includes(order.status),
+      'Dalabkan lama dhammeyn karo',
       409,
     );
     if (order.paymentStatus !== 'PAID') {
-      ensure(
-        data.confirmCashCollected,
-        'Confirm cash collected before completing the delivery',
-        409,
-      );
+      ensure(data.confirmPaymentCollected, 'Xaqiiji in lacagta la qaaday', 409);
       ensure(
         !order.payments.some((payment) => payment.refunds.length > 0),
         'Refunded orders cannot be completed',
@@ -117,7 +91,6 @@ export async function completeDelivery(orderId: string, body: unknown, user: Act
         .reduce((sum, payment) => sum + money(payment.amount), 0);
       ensure(
         pending.length > 0 &&
-          pending.every((payment) => payment.method === 'CASH') &&
           pending.reduce((sum, payment) => sum + money(payment.amount), 0) ===
             money(order.total) - captured,
         'Outstanding payment must be settled before delivery completion',
@@ -135,12 +108,12 @@ export async function completeDelivery(orderId: string, body: unknown, user: Act
     await audit(
       tx,
       user,
-      rider ? 'RIDER_COMPLETED_DELIVERY' : 'ADMIN_COMPLETED_DELIVERY',
+      rider ? 'RIDER_COMPLETED_DELIVERY' : 'STAFF_COMPLETED_DELIVERY',
       'Delivery',
       order.delivery.id,
       {
         proofNote: data.proofNote,
-        confirmCashCollected: data.confirmCashCollected,
+        confirmPaymentCollected: data.confirmPaymentCollected,
         from: order.status,
       },
     );
