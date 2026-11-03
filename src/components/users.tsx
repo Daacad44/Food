@@ -53,7 +53,8 @@ const actionLabel: Record<string, string> = {
   USER_ROLE_CHANGE: 'Doorka la beddelay',
   USER_SUSPEND: 'La hakiyey',
   USER_ACTIVATE: 'Dib loo furay',
-  USER_PASSWORD_RESET: 'Password la reset-gareeyay',
+  USER_PASSWORD_RESET: 'Password ku meel gaar ah la siiyay',
+  USER_PASSWORD_SET: 'Password rasmi ah loo dejiyay',
   USER_SESSIONS_REVOKED: 'Qalab laga saaray',
   PASSWORD_CHANGE: 'Password-kiisa wuu beddelay',
   ACCOUNT_UPDATE: 'Profile-kiisa wuu beddelay',
@@ -984,7 +985,8 @@ export function UserDetail({ id }: { id: string }) {
     [form, setForm] = useState<any>(null),
     [busy, setBusy] = useState(false),
     [failure, setFailure] = useState(''),
-    [temp, setTemp] = useState('');
+    [temp, setTemp] = useState(''),
+    [passwordDialog, setPasswordDialog] = useState(false);
   useEffect(() => {
     if (u) setForm({ fullName: u.fullName, email: u.email, phone: u.phone || '', role: u.role });
   }, [u]);
@@ -1042,6 +1044,23 @@ export function UserDetail({ id }: { id: string }) {
         </div>
       </div>
       {temp && <TemporaryPassword name={u.fullName} value={temp} onClose={() => setTemp('')} />}
+      {passwordDialog && (
+        <SetPasswordDialog
+          person={u}
+          canSetPermanent={user?.role === 'OWNER'}
+          onClose={() => setPasswordDialog(false)}
+          onDone={async (result, mode) => {
+            setPasswordDialog(false);
+            if (result.temporaryPassword) setTemp(result.temporaryPassword);
+            await refresh();
+            toast(
+              mode === 'permanent'
+                ? `Password rasmi ah ayaa loo dejiyay ${u.fullName}`
+                : 'Password ku meel gaar ah ayaa la dejiyay',
+            );
+          }}
+        />
+      )}
       {failure && <Notice error={failure} />}
       {!u.manageable && (
         <div className="notice neutral">
@@ -1165,25 +1184,9 @@ export function UserDetail({ id }: { id: string }) {
               <button
                 className="button outline full"
                 disabled={busy}
-                onClick={async () => {
-                  if (
-                    !confirm(
-                      `Password cusub oo ku meel gaar ah u samee ${u.fullName}? Dhammaan qalabkiisa waa laga saarayaa.`,
-                    )
-                  )
-                    return;
-                  const r = await run(
-                    () =>
-                      api('admin/users/' + u.id + '/reset-password', {
-                        method: 'POST',
-                        body: '{}',
-                      }),
-                    'Password-ka waa la reset-gareeyay',
-                  );
-                  if (r?.temporaryPassword) setTemp(r.temporaryPassword);
-                }}
+                onClick={() => setPasswordDialog(true)}
               >
-                <KeyRound size={16} /> Reset password
+                <KeyRound size={16} /> Beddel password-ka
               </button>
               <button
                 className="button outline full"
@@ -1262,6 +1265,143 @@ export function UserDetail({ id }: { id: string }) {
     </div>
   );
 }
+/**
+ * Owner/manager sets someone's password: a generated temporary one, a temporary one they type, or (owners
+ * only) a permanent one the person keeps. Every device is signed out.
+ */
+function SetPasswordDialog({
+  person,
+  canSetPermanent,
+  onClose,
+  onDone,
+}: {
+  person: any;
+  canSetPermanent: boolean;
+  onClose: () => void;
+  onDone: (result: any, mode: string) => Promise<void>;
+}) {
+  const dialog = useRef<HTMLDialogElement>(null),
+    [mode, setMode] = useState<'generate' | 'temporary' | 'permanent'>(
+      canSetPermanent ? 'permanent' : 'generate',
+    ),
+    [value, setValue] = useState(''),
+    [confirmValue, setConfirm] = useState(''),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState('');
+  useEffect(() => dialog.current?.showModal(), []);
+  const typed = mode !== 'generate';
+  return (
+    <dialog
+      ref={dialog}
+      className="modal user-dialog"
+      onCancel={onClose}
+      aria-labelledby="pw-title"
+    >
+      <div className="modal-heading">
+        <h2 id="pw-title">Password · {person.fullName}</h2>
+        <button className="icon-button" onClick={onClose} aria-label="Xir">
+          <X size={20} />
+        </button>
+      </div>
+      <form
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (typed && value !== confirmValue) return setError('Labada password isma laha');
+          setBusy(true);
+          setError('');
+          try {
+            const result = await api('admin/users/' + person.id + '/reset-password', {
+              method: 'POST',
+              body: JSON.stringify(
+                mode === 'generate' ? {} : { password: value, temporary: mode === 'temporary' },
+              ),
+            });
+            await onDone(result, mode);
+          } catch (err) {
+            setError((err as Error).message);
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <fieldset className="role-picker">
+          <legend>Nooca password-ka</legend>
+          {canSetPermanent && (
+            <label className={'role-option ' + (mode === 'permanent' ? 'active' : '')}>
+              <input
+                type="radio"
+                checked={mode === 'permanent'}
+                onChange={() => setMode('permanent')}
+              />
+              <span>
+                <b>Password rasmi ah</b>
+                <small>
+                  Adigu dejiso; qofku wuu isticmaalayaa isagoon beddelin. Sir ahaan u sii.
+                </small>
+              </span>
+            </label>
+          )}
+          <label className={'role-option ' + (mode === 'generate' ? 'active' : '')}>
+            <input
+              type="radio"
+              checked={mode === 'generate'}
+              onChange={() => setMode('generate')}
+            />
+            <span>
+              <b>Samee password ku meel gaar ah</b>
+              <small>Hal mar ayaa la muujinayaa; marka uu galo wuxuu dooranayaa mid cusub.</small>
+            </span>
+          </label>
+          <label className={'role-option ' + (mode === 'temporary' ? 'active' : '')}>
+            <input
+              type="radio"
+              checked={mode === 'temporary'}
+              onChange={() => setMode('temporary')}
+            />
+            <span>
+              <b>Qor password ku meel gaar ah</b>
+              <small>Adigu qor; marka uu galo waa inuu beddelo.</small>
+            </span>
+          </label>
+        </fieldset>
+        {typed && (
+          <>
+            <PasswordField
+              label={mode === 'permanent' ? 'Password rasmi ah' : 'Password ku meel gaar ah'}
+              value={value}
+              onChange={setValue}
+              withGenerator
+            />
+            <label className="field">
+              Ku celi password-ka
+              <input
+                type="password"
+                required
+                value={confirmValue}
+                autoComplete="new-password"
+                onChange={(e) => setConfirm(e.target.value)}
+              />
+            </label>
+          </>
+        )}
+        <p className="muted">
+          {person.fullName} dhammaan qalabkiisa waa laga saarayaa; wuxuu ku soo galayaa password-ka
+          cusub.
+        </p>
+        {error && <Notice error={error} />}
+        <div className="modal-footer">
+          <button type="button" className="button outline" onClick={onClose}>
+            Ka noqo
+          </button>
+          <button className="button" disabled={busy}>
+            {busy ? 'Sug…' : 'Dejin password-ka'} <Check size={16} />
+          </button>
+        </div>
+      </form>
+    </dialog>
+  );
+}
+
 function Sessions({
   sessions,
   onRevoke,

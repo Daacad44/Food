@@ -198,7 +198,7 @@ describe('user management', () => {
     const { temporaryPassword } = await resetPassword(person.id, {}, manager);
     expect((await (await call('auth/me', 'GET', undefined, cookie)).json()).user).toBeNull();
     expect((await login(person.email)).res.status).toBe(401);
-    const fresh = await login(person.email, temporaryPassword);
+    const fresh = await login(person.email, temporaryPassword!);
     expect((await fresh.res.json()).mustChangePassword).toBe(true);
   });
   it('changing your own password keeps this device and signs out the others', async () => {
@@ -272,5 +272,34 @@ describe('user management', () => {
       await db.staffUser.count({ where: { id: { in: [a.id, b.id] }, status: 'SUSPENDED' } }),
     ).toBe(2);
     await expect(bulkUsers({ ids: [a.id], action: 'role' }, owner)).rejects.toThrow('doorka');
+  });
+  it('lets an owner set a real password the person keeps, or a temporary one', async () => {
+    const person = await staff('CASHIER');
+    const { cookie } = await login(person.email);
+    await expect(
+      resetPassword(person.id, { password: 'RealPassword2026', temporary: false }, manager),
+    ).rejects.toThrow('Milkiilaha');
+    await expect(resetPassword(person.id, { temporary: false }, owner)).rejects.toThrow('rasmiga');
+    await expect(
+      resetPassword(person.id, { password: 'short', temporary: false }, owner),
+    ).rejects.toThrow();
+    expect(
+      await resetPassword(person.id, { password: 'RealPassword2026', temporary: false }, owner),
+    ).toEqual({ temporary: false });
+    // Old devices are signed out; the new password works with no forced change.
+    expect((await (await call('auth/me', 'GET', undefined, cookie)).json()).user).toBeNull();
+    expect((await login(person.email)).res.status).toBe(401);
+    const real = await login(person.email, 'RealPassword2026');
+    expect((await real.res.json()).mustChangePassword).toBe(false);
+    expect((await call('menu/items', 'GET', undefined, real.cookie)).status).toBe(200);
+    expect(
+      await db.auditLog.count({ where: { entityId: person.id, action: 'USER_PASSWORD_SET' } }),
+    ).toBe(1);
+    // A typed temporary password: not echoed back, must be changed at sign-in.
+    expect(
+      await resetPassword(person.id, { password: 'TypedTemp2026x', temporary: true }, manager),
+    ).toEqual({ temporary: true, temporaryPassword: null });
+    const temp = await login(person.email, 'TypedTemp2026x');
+    expect((await temp.res.json()).mustChangePassword).toBe(true);
   });
 });
