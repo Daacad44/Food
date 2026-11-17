@@ -394,7 +394,13 @@ export function OrderDetail({ id }: { id: string }) {
                   {p.status === 'PAID' ? 'La qaaday' : p.status}
                 </span>
                 {taker && open && ['PENDING', 'UNPAID'].includes(p.status) && (
-                  <PaymentCapture payment={p} onDone={refresh} />
+                  <PaymentCapture
+                    payment={p}
+                    onDone={refresh}
+                    waafi={restaurant?.paymentModes?.mobile === 'waafi'}
+                    orderNumber={o.orderNumber}
+                    fallbackPhone={o.guestPhone}
+                  />
                 )}
                 {p.refunds?.map((r: any) => (
                   <small className="muted" key={r.id}>

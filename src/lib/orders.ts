@@ -1,4 +1,5 @@
-import { Prisma, type OrderStatus } from '@prisma/client';
+import { Prisma, type OrderStatus, type PaymentMethod } from '@prisma/client';
+import { parseSomaliMobile } from './somali-phone';
 import { db } from './db';
 import { ensure } from './errors';
 import {
@@ -136,10 +137,21 @@ export async function createOrder(
     403,
   );
   ensure(key.length >= 16 && key.length <= 120, 'Idempotency-Key required');
+  // Mobile money: the wallet follows the payer's number (61 → EVC Plus, 68 → Jeeb, 63 → ZAAD …).
+  const payer =
+    input.paymentMethod === 'MOBILE'
+      ? parseSomaliMobile(input.paymentPhone || input.customerPhone)
+      : null;
   ensure(
-    input.paymentMethod === 'CASH' || input.paymentPhone,
+    input.paymentMethod !== 'MOBILE' || payer,
+    'Lambarka lacagta lama garan karo. Geli lambar Soomaali ah (tusaale 61xxxxxxx).',
+  );
+  ensure(
+    input.paymentMethod === 'CASH' || input.paymentMethod === 'MOBILE' || input.paymentPhone,
     'Geli telefoonka lacagta laga soo diray',
   );
+  const method = (payer ? payer.wallet : input.paymentMethod) as PaymentMethod,
+    payerReference = payer ? payer.msisdn : input.paymentPhone || null;
   const keyHash = digest(key),
     requestHash = digest(JSON.stringify(input) + user.id),
     token = trackingToken(key);
@@ -151,7 +163,11 @@ export async function createOrder(
         'Idempotency key already used for another request',
         409,
       );
-      return { id: old.id, orderNumber: old.orderNumber, total: old.total };
+      const payment = await tx.payment.findFirst({
+        where: { orderId: old.id },
+        orderBy: { createdAt: 'asc' },
+      });
+      return { id: old.id, orderNumber: old.orderNumber, total: old.total, paymentId: payment?.id };
     }
     const q = await quote(tx, input, user.restaurantId);
     if (expectedTotal !== undefined)
@@ -204,9 +220,9 @@ export async function createOrder(
         statusEvents: { create: { toStatus: 'CONFIRMED', actorId: user.id } },
         payments: {
           create: {
-            method: input.paymentMethod,
+            method,
             provider: 'manual',
-            providerReference: input.paymentPhone || null,
+            providerReference: payerReference,
             status: paid ? 'PAID' : 'PENDING',
             ...(paid ? { paidAt: new Date() } : {}),
             amount: decimal(q.total),
@@ -220,7 +236,7 @@ export async function createOrder(
     await tx.order.update({ where: { id: order.id }, data: { stockDeducted: true } });
     await audit(tx, user, 'ORDER_CREATE', 'Order', order.id, {
       total: decimal(q.total),
-      paymentMethod: input.paymentMethod,
+      paymentMethod: method,
       paid,
     });
     await event(tx, q.restaurant.id, 'order.created', {
@@ -228,7 +244,14 @@ export async function createOrder(
       orderNumber: order.orderNumber,
     });
     if (input.riderId) await assignRiderInTransaction(tx, order.id, input.riderId, user);
-    return { id: order.id, orderNumber: order.orderNumber, total: order.total };
+    const payment = await tx.payment.findFirstOrThrow({ where: { orderId: order.id } });
+    return {
+      id: order.id,
+      orderNumber: order.orderNumber,
+      total: order.total,
+      paymentId: payment.id,
+      paymentMethod: method,
+    };
   });
 }
 export async function event(

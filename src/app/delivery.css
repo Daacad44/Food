@@ -877,3 +877,122 @@
     font-family: var(--mono);
   }
 }
+
+/* WaafiPay */
+.wallet-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 2px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.wallet-badge.ok {
+  color: #2e7d4f;
+}
+.take-panel .wallet-badge.ok {
+  color: var(--mint);
+}
+.wallet-badge.bad {
+  color: var(--chili);
+}
+.take-panel .wallet-badge.bad {
+  color: #ff8a6d;
+}
+.payment-error {
+  color: var(--chili);
+  font-size: 13px;
+}
+.payment-wait {
+  color: #a06a00;
+  font-size: 13px;
+}
+.waafi-dialog {
+  width: min(480px, calc(100vw - 32px));
+}
+.waafi-dialog .modal-heading small {
+  font-family: var(--mono, monospace);
+  font-size: 13px;
+  font-weight: 400;
+  opacity: 0.7;
+}
+.waafi-body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 18px 26px 4px;
+}
+.waafi-dialog > .modal-footer {
+  padding: 16px 26px 22px;
+}
+.waafi-wait,
+.waafi-result {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 18px;
+  border-radius: 16px;
+  text-align: center;
+}
+.waafi-wait p,
+.waafi-result p {
+  margin: 0;
+}
+.waafi-phone {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 6px;
+  border-radius: 99px;
+  background: rgba(23, 22, 74, 0.07);
+}
+.waafi-phone .spin {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  padding: 3px;
+  border-radius: 99px;
+  background: #fff;
+}
+.spin {
+  animation: waafi-spin 1s linear infinite;
+}
+@keyframes waafi-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spin {
+    animation: none;
+  }
+}
+.waafi-result.ok {
+  background: rgba(46, 125, 79, 0.1);
+  color: #1f5c39;
+}
+.waafi-result.bad {
+  background: rgba(229, 66, 30, 0.1);
+  color: #9c2a0d;
+  align-items: flex-start;
+  text-align: left;
+}
+.waafi-result.warn {
+  background: #fff4d6;
+  color: #7a5200;
+  align-items: flex-start;
+  text-align: left;
+}
+.rider-waafi {
+  margin-bottom: 10px;
+}
+.waafi-status p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}

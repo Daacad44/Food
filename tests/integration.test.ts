@@ -511,10 +511,8 @@ describe('HTTP: authorization, the orders board and payments', () => {
       operator,
     );
     const p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
-    expect((await call(`payments/${p.id}/initialize`, 'POST', {}, operatorCookie)).status).toBe(
-      501,
-    );
-    expect((await call('webhooks/payments/evc_plus', 'POST', { status: 'PAID' })).status).toBe(501);
+    expect((await call(`payments/${p.id}/send`, 'POST', {}, operatorCookie)).status).toBe(501);
+    expect((await call('webhooks/waafi', 'POST', { event: 'authorization' })).status).toBe(501);
     expect((await db.payment.findUniqueOrThrow({ where: { id: p.id } })).status).toBe('PENDING');
     expect((await call('payments/' + p.id + '/capture', 'POST', {})).status).toBe(401);
   });

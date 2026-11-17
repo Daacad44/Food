@@ -1,5 +1,11 @@
 # Validation report — 21 October 2026
 
+## WaafiPay — 17 November 2026
+
+- 58 unit/PostgreSQL integration tests (9 new) and 12 desktop/mobile browser tests passed; TypeScript and build passed.
+- WaafiPay was tested against a local stand-in for its API (no real credentials were available): request shape (`API_PURCHASE`, `MWALLET_ACCOUNT`, server amount, per-attempt reference), approval recorded, decline message and retry from another number, one request at a time under concurrency, lost answer kept locked and settled by a signed webhook (bad signature, stale and repeated events rejected), rider limited to their own order, cancelled orders refused, wrong or missing credentials failing closed.
+- Number detection covers every NCA prefix and common typing forms. The real sandbox must still be tried with WaafiPay credentials.
+
 ## Cashier role and users page — 3 November 2026
 
 - 48 unit/PostgreSQL integration tests and 10 desktop/mobile browser tests passed; TypeScript and build passed.

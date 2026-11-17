@@ -33,7 +33,8 @@ test('signing in opens the order screen; a delivery order is taken and priced', 
   await page.getByLabel('Magaca', { exact: true }).fill('Browser Guest');
   await page.getByLabel(/Cinwaanka/).fill('Bakaaro, agagaarka suuqa');
   await page.getByLabel('Delivery fee ($)').fill('1');
-  await page.getByRole('button', { name: 'EVC Plus' }).click();
+  await page.getByRole('button', { name: 'Mobile money' }).click();
+  await expect(page.getByText('Hormuud · EVC Plus')).toBeVisible();
   // 19.00 + 8.50 = 27.50; 5% VAT 1.38; delivery 1.00
   await expect(page.locator('.take-total dd')).toHaveText('$29.88');
   await page.getByRole('button', { name: 'Save', exact: true }).click();

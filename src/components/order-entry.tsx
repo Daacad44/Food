@@ -5,7 +5,9 @@ import { Minus, Plus, Printer, Search, Trash2, X, Check } from 'lucide-react';
 import { api, useData, useStore } from './store';
 import { Loading, Notice } from './shared';
 import { PrintOnce } from './receipt';
-import { formatMoney, paymentMethodLabel, PAYMENT_METHODS } from '@/lib/domain';
+import { formatMoney } from '@/lib/domain';
+import { parseSomaliMobile } from '@/lib/somali-phone';
+import { WaafiSendDialog, WalletBadge } from './waafi';
 
 type Line = {
   key: string;
@@ -27,9 +29,11 @@ const blank = {
   deliveryFee: '',
   riderId: '',
   discountPercent: '',
-  paymentMethod: 'CASH' as string,
+  paymentMethod: 'CASH' as 'CASH' | 'MOBILE',
   paymentPhone: '',
   paid: false,
+  /** Mobile money with WaafiPay: ask the customer's phone to pay right after saving. */
+  sendNow: true,
   withVat: true,
   notes: '',
 };
@@ -50,7 +54,15 @@ export function OrderEntry() {
     [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [known, setKnown] = useState<any>(null),
-    [printing, setPrinting] = useState<any>(null);
+    [printing, setPrinting] = useState<any>(null),
+    [sending, setSending] = useState<{
+      paymentId: string;
+      orderId: string;
+      orderNumber: string;
+      amount: unknown;
+      phone: string;
+      print: boolean;
+    } | null>(null);
   const keys = useRef<Record<string, string>>({});
   const set = (patch: Partial<typeof blank>) => setForm((f) => ({ ...f, ...patch }));
   const taxRate = Number(restaurant?.settings?.taxRate ?? 0);
@@ -123,7 +135,13 @@ export function OrderEntry() {
     if (busy) return;
     setError('');
     if (!lines.length) return setError('Ku dar ugu yaraan hal cunto.');
-    const mobile = form.paymentMethod !== 'CASH';
+    const mobile = form.paymentMethod === 'MOBILE',
+      waafi = mobile && restaurant?.paymentModes?.mobile === 'waafi',
+      payerPhone = (form.paymentPhone || form.customerPhone).trim();
+    if (mobile && !parseSomaliMobile(payerPhone))
+      return setError(
+        'Lambarka lacagta lama garan karo. Geli lambar Soomaali ah (tusaale 61xxxxxxx).',
+      );
     const payload = {
       items: lines.map((l) => ({
         menuItemId: l.menuItemId,
@@ -139,8 +157,8 @@ export function OrderEntry() {
       discountPercent: Number(form.discountPercent) || 0,
       withVat: form.withVat,
       paymentMethod: form.paymentMethod,
-      ...(mobile ? { paymentPhone: (form.paymentPhone || form.customerPhone).trim() } : {}),
-      paid: form.paid,
+      ...(mobile ? { paymentPhone: payerPhone } : {}),
+      paid: waafi && form.sendNow ? false : form.paid,
       ...(form.riderId ? { riderId: form.riderId } : {}),
       ...(form.notes.trim() ? { notes: form.notes.trim() } : {}),
     };
@@ -158,7 +176,16 @@ export function OrderEntry() {
       });
       delete keys.current[intent];
       toast(`Dalabka ${created.orderNumber} waa la kaydiyey`);
-      if (print) setPrinting(await api('admin/orders/' + created.id));
+      if (waafi && form.sendNow && !form.paid && created.paymentId)
+        setSending({
+          paymentId: created.paymentId,
+          orderId: created.id,
+          orderNumber: created.orderNumber,
+          amount: created.total,
+          phone: payerPhone,
+          print,
+        });
+      else if (print) setPrinting(await api('admin/orders/' + created.id));
       reset();
       void refreshRiders();
     } catch (e) {
@@ -393,7 +420,7 @@ export function OrderEntry() {
           <fieldset className="take-pay">
             <legend>Lacag-bixinta</legend>
             <div className="segmented" role="group" aria-label="Habka lacag-bixinta">
-              {PAYMENT_METHODS.map((m) => (
+              {(['CASH', 'MOBILE'] as const).map((m) => (
                 <button
                   type="button"
                   key={m}
@@ -401,13 +428,13 @@ export function OrderEntry() {
                   className={form.paymentMethod === m ? 'active' : ''}
                   onClick={() => set({ paymentMethod: m })}
                 >
-                  {paymentMethodLabel[m]}
+                  {m === 'CASH' ? 'Cash' : 'Mobile money'}
                 </button>
               ))}
             </div>
-            {form.paymentMethod !== 'CASH' && (
+            {form.paymentMethod === 'MOBILE' && (
               <label className="field">
-                Payment tell ({paymentMethodLabel[form.paymentMethod]})
+                Payment tell
                 <input
                   type="tel"
                   inputMode="tel"
@@ -415,31 +442,63 @@ export function OrderEntry() {
                   placeholder={form.customerPhone || '61xxxxxxx'}
                   onChange={(e) => set({ paymentPhone: e.target.value })}
                 />
-                <small className="muted">
-                  {restaurant?.paymentModes?.[form.paymentMethod] === 'automatic'
-                    ? 'Si toos ah ayaa loo xaqiijinayaa.'
-                    : 'Manual: hubi lacagta taleefanka, kadib calaamadee “La qaaday”.'}
-                </small>
+                <WalletBadge phone={form.paymentPhone || form.customerPhone} />
               </label>
             )}
-            <div className="segmented" role="group" aria-label="Xaaladda lacagta">
-              <button
-                type="button"
-                aria-pressed={!form.paid}
-                className={!form.paid ? 'active' : ''}
-                onClick={() => set({ paid: false })}
-              >
-                Lama qaadin
-              </button>
-              <button
-                type="button"
-                aria-pressed={form.paid}
-                className={form.paid ? 'active' : ''}
-                onClick={() => set({ paid: true })}
-              >
-                La qaaday
-              </button>
-            </div>
+            {form.paymentMethod === 'MOBILE' && restaurant?.paymentModes?.mobile === 'waafi' ? (
+              <div className="segmented" role="group" aria-label="Goorta lacagta">
+                <button
+                  type="button"
+                  aria-pressed={form.sendNow && !form.paid}
+                  className={form.sendNow && !form.paid ? 'active' : ''}
+                  onClick={() => set({ sendNow: true, paid: false })}
+                >
+                  Dir hadda
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={!form.sendNow && !form.paid}
+                  className={!form.sendNow && !form.paid ? 'active' : ''}
+                  onClick={() => set({ sendNow: false, paid: false })}
+                >
+                  Dambe
+                </button>
+                <button
+                  type="button"
+                  aria-pressed={form.paid}
+                  className={form.paid ? 'active' : ''}
+                  onClick={() => set({ paid: true })}
+                >
+                  La qaaday
+                </button>
+              </div>
+            ) : (
+              <>
+                {form.paymentMethod === 'MOBILE' && (
+                  <small className="muted">
+                    WaafiPay lama xirin: hubi lacagta taleefanka, kadib calaamadee “La qaaday”.
+                  </small>
+                )}
+                <div className="segmented" role="group" aria-label="Xaaladda lacagta">
+                  <button
+                    type="button"
+                    aria-pressed={!form.paid}
+                    className={!form.paid ? 'active' : ''}
+                    onClick={() => set({ paid: false })}
+                  >
+                    Lama qaadin
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={form.paid}
+                    className={form.paid ? 'active' : ''}
+                    onClick={() => set({ paid: true })}
+                  >
+                    La qaaday
+                  </button>
+                </div>
+              </>
+            )}
           </fieldset>
 
           <label className="field">
@@ -514,6 +573,20 @@ export function OrderEntry() {
           onAdd={(options) => {
             add(picking, options);
             setPicking(null);
+          }}
+        />
+      )}
+      {sending && (
+        <WaafiSendDialog
+          paymentId={sending.paymentId}
+          amount={sending.amount}
+          phone={sending.phone}
+          orderNumber={sending.orderNumber}
+          onPaid={() => toast(`Lacagta ${sending.orderNumber} waa la helay`)}
+          onClose={async () => {
+            const done = sending;
+            setSending(null);
+            if (done.print) setPrinting(await api('admin/orders/' + done.orderId));
           }}
         />
       )}

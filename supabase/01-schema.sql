@@ -1088,6 +1088,36 @@ ALTER TYPE "StaffRole" RENAME VALUE 'OPERATOR' TO 'CASHIER';
 END
 $botan_migration$;
 
+DO $botan_migration$
+BEGIN
+  IF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611170001_waafi_pay' AND rolled_back_at IS NULL AND finished_at IS NULL) THEN
+    RAISE EXCEPTION 'Unfinished migration: 202611170001_waafi_pay. Resolve it before running setup.';
+  ELSIF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611170001_waafi_pay' AND rolled_back_at IS NULL AND finished_at IS NOT NULL) THEN
+    IF EXISTS (SELECT 1 FROM public."_prisma_migrations" WHERE migration_name = '202611170001_waafi_pay' AND rolled_back_at IS NULL AND checksum <> 'c6454b346b805f566d2cbcb612c0cf775a12f71897b75bbcff356dc8dc20d36d') THEN
+      RAISE EXCEPTION 'Migration checksum mismatch: 202611170001_waafi_pay. No changes applied.';
+    END IF;
+    RAISE NOTICE 'Already applied: 202611170001_waafi_pay';
+  ELSE
+-- WaafiPay: every Somali mobile-money wallet, and the state of a payment request sent to the
+-- customer's phone.
+ALTER TYPE "PaymentMethod" ADD VALUE IF NOT EXISTS 'JEEB';
+ALTER TYPE "PaymentMethod" ADD VALUE IF NOT EXISTS 'KAASH_PLUS';
+ALTER TYPE "PaymentMethod" ADD VALUE IF NOT EXISTS 'KAYD';
+ALTER TYPE "PaymentMethod" ADD VALUE IF NOT EXISTS 'EDAHAB';
+ALTER TYPE "PaymentMethod" ADD VALUE IF NOT EXISTS 'EMAAL';
+ALTER TYPE "PaymentMethod" ADD VALUE IF NOT EXISTS 'MYCASH';
+-- How many times the request was sent; while "processingAt" is set (for up to 3 minutes) no second
+-- request can be sent, so a customer is never asked to pay twice.
+ALTER TABLE "Payment" ADD COLUMN "attempts" INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE "Payment" ADD COLUMN "processingAt" TIMESTAMP(3);
+ALTER TABLE "Payment" ADD COLUMN "lastError" TEXT;
+
+    INSERT INTO public."_prisma_migrations" (id, checksum, finished_at, migration_name, applied_steps_count)
+    VALUES (gen_random_uuid()::text, 'c6454b346b805f566d2cbcb612c0cf775a12f71897b75bbcff356dc8dc20d36d', now(), '202611170001_waafi_pay', 1);
+  END IF;
+END
+$botan_migration$;
+
 ALTER TABLE public."_prisma_migrations" ENABLE ROW LEVEL SECURITY;
 COMMIT;
 SELECT migration_name, finished_at FROM public."_prisma_migrations" WHERE rolled_back_at IS NULL ORDER BY migration_name;

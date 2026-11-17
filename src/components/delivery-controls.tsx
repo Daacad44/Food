@@ -1,8 +1,10 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-import { Check, X } from 'lucide-react';
+import { Check, Smartphone, X } from 'lucide-react';
 import { api, useStore } from './store';
-import { formatMoney, paymentMethodLabel, PAYMENT_METHODS } from '@/lib/domain';
+import { formatMoney, paymentMethodLabel } from '@/lib/domain';
+import { parseSomaliMobile } from '@/lib/somali-phone';
+import { WaafiSendDialog, WalletBadge } from './waafi';
 
 export function NewRiderDialog({
   onClose,
@@ -91,27 +93,50 @@ export function NewRiderDialog({
 }
 
 /** Records money received by hand: cash counted, or a mobile-money transfer seen on the phone. */
-export function PaymentCapture({ payment, onDone }: { payment: any; onDone: () => Promise<void> }) {
+/**
+ * Records money received by hand: cash counted, or a mobile-money transfer seen on the phone. With
+ * WaafiPay connected it also offers to ask the customer's phone to pay.
+ */
+export function PaymentCapture({
+  payment,
+  onDone,
+  waafi = false,
+  orderNumber,
+  fallbackPhone,
+}: {
+  payment: any;
+  onDone: () => Promise<void>;
+  waafi?: boolean;
+  orderNumber?: string;
+  fallbackPhone?: string;
+}) {
   const { toast } = useStore(),
-    [method, setMethod] = useState(payment.method),
-    [reference, setReference] = useState(payment.providerReference || ''),
+    [kind, setKind] = useState<'CASH' | 'MOBILE'>(payment.method === 'CASH' ? 'CASH' : 'MOBILE'),
+    [reference, setReference] = useState(payment.providerReference || fallbackPhone || ''),
     [busy, setBusy] = useState(false),
+    [sending, setSending] = useState(false),
     [error, setError] = useState('');
+  const detected = parseSomaliMobile(reference);
+  const processing =
+    payment.processingAt && Date.now() - new Date(payment.processingAt).getTime() < 3 * 60 * 1000;
   return (
     <form
       className="payment-capture"
       onSubmit={async (event) => {
         event.preventDefault();
         if (busy) return;
+        if (kind === 'MOBILE' && !detected)
+          return setError('Geli lambar Soomaali ah oo la garanayo (tusaale 61xxxxxxx).');
         setBusy(true);
         setError('');
         try {
           await api('payments/' + payment.id + '/capture', {
             method: 'POST',
-            body: JSON.stringify({
-              method,
-              ...(method !== 'CASH' && reference ? { reference: reference.trim() } : {}),
-            }),
+            body: JSON.stringify(
+              kind === 'CASH'
+                ? { method: 'CASH' }
+                : { method: detected!.wallet, reference: detected!.msisdn },
+            ),
           });
           await onDone();
           toast('Lacagta waa la diiwaangeliyey');
@@ -122,28 +147,31 @@ export function PaymentCapture({ payment, onDone }: { payment: any; onDone: () =
         }
       }}
     >
+      {payment.lastError && <small className="payment-error">{payment.lastError}</small>}
+      {processing && <small className="payment-wait">Codsi WaafiPay ayaa u socda macmiilka…</small>}
       <div className="segmented" role="group" aria-label="Habka lacagta">
-        {PAYMENT_METHODS.map((m) => (
+        {(['CASH', 'MOBILE'] as const).map((m) => (
           <button
             type="button"
             key={m}
-            className={method === m ? 'active' : ''}
-            aria-pressed={method === m}
-            onClick={() => setMethod(m)}
+            className={kind === m ? 'active' : ''}
+            aria-pressed={kind === m}
+            onClick={() => setKind(m)}
           >
-            {paymentMethodLabel[m]}
+            {m === 'CASH' ? 'Cash' : 'Mobile money'}
           </button>
         ))}
       </div>
-      {method !== 'CASH' && (
+      {kind === 'MOBILE' && (
         <label className="field">
-          Telefoonka lacagta laga soo diray
+          Telefoonka lacagta
           <input
             type="tel"
             required
             value={reference}
             onChange={(e) => setReference(e.target.value)}
           />
+          <WalletBadge phone={reference} />
         </label>
       )}
       {error && (
@@ -151,9 +179,32 @@ export function PaymentCapture({ payment, onDone }: { payment: any; onDone: () =
           {error}
         </div>
       )}
-      <button className="button outline full" disabled={busy}>
-        {busy ? 'Sug…' : `La qaaday · ${formatMoney(payment.amount)}`}
+      {kind === 'MOBILE' && waafi && (
+        <button
+          type="button"
+          className="button full"
+          disabled={!detected || Boolean(processing)}
+          onClick={() => setSending(true)}
+        >
+          <Smartphone size={16} /> Dir codsiga lacagta (WaafiPay)
+        </button>
+      )}
+      <button className="button outline full" disabled={busy || Boolean(processing)}>
+        {busy ? 'Sug…' : `La qaaday (gacan) · ${formatMoney(payment.amount)}`}
       </button>
+      {sending && detected && (
+        <WaafiSendDialog
+          paymentId={payment.id}
+          amount={payment.amount}
+          phone={detected.msisdn}
+          orderNumber={orderNumber}
+          onPaid={() => toast('Lacagta waa la helay')}
+          onClose={async () => {
+            setSending(false);
+            await onDone();
+          }}
+        />
+      )}
     </form>
   );
 }
