@@ -946,21 +946,22 @@ export function Payments() {
               <Link className="small-button" href={'/admin/orders/' + p.orderId}>
                 Details
               </Link>
-              {['PENDING', 'UNPAID'].includes(p.status) && user.role !== 'ACCOUNTANT' && (
-                <button
-                  className="small-button"
-                  onClick={async () => {
-                    try {
-                      await api('payments/' + p.id + '/capture', { method: 'POST', body: '{}' });
-                      await refresh();
-                    } catch (e) {
-                      toast((e as Error).message);
-                    }
-                  }}
-                >
-                  Cash collected
-                </button>
-              )}
+              {['PENDING', 'UNPAID'].includes(p.status) &&
+                ['OWNER', 'MANAGER'].includes(user.role) && (
+                  <button
+                    className="small-button"
+                    onClick={async () => {
+                      try {
+                        await api('payments/' + p.id + '/capture', { method: 'POST', body: '{}' });
+                        await refresh();
+                      } catch (e) {
+                        toast((e as Error).message);
+                      }
+                    }}
+                  >
+                    La qaaday (gacan)
+                  </button>
+                )}
             </>
           )}
         />

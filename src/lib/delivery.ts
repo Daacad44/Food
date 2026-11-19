@@ -77,6 +77,11 @@ export async function completeDelivery(orderId: string, body: unknown, user: Act
       409,
     );
     if (order.paymentStatus !== 'PAID') {
+      ensure(
+        (MANAGERS as readonly string[]).includes(user.role),
+        'Lacagta weli lama bixin. Dir codsiga WaafiPay, ama maamulaha ha diiwaangeliyo.',
+        409,
+      );
       ensure(data.confirmPaymentCollected, 'Xaqiiji in lacagta la qaaday', 409);
       ensure(
         !order.payments.some((payment) => payment.refunds.length > 0),

@@ -103,15 +103,20 @@ export function PaymentCapture({
   waafi = false,
   orderNumber,
   fallbackPhone,
+  manual = false,
 }: {
   payment: any;
   onDone: () => Promise<void>;
   waafi?: boolean;
   orderNumber?: string;
   fallbackPhone?: string;
+  /** Owner/manager only: record a payment by hand from the dashboard. */
+  manual?: boolean;
 }) {
   const { toast } = useStore(),
-    [kind, setKind] = useState<'CASH' | 'MOBILE'>(payment.method === 'CASH' ? 'CASH' : 'MOBILE'),
+    [kind, setKind] = useState<'CASH' | 'MOBILE'>(
+      manual && payment.method === 'CASH' ? 'CASH' : 'MOBILE',
+    ),
     [reference, setReference] = useState(payment.providerReference || fallbackPhone || ''),
     [busy, setBusy] = useState(false),
     [sending, setSending] = useState(false),
@@ -149,19 +154,21 @@ export function PaymentCapture({
     >
       {payment.lastError && <small className="payment-error">{payment.lastError}</small>}
       {processing && <small className="payment-wait">Codsi WaafiPay ayaa u socda macmiilka…</small>}
-      <div className="segmented" role="group" aria-label="Habka lacagta">
-        {(['CASH', 'MOBILE'] as const).map((m) => (
-          <button
-            type="button"
-            key={m}
-            className={kind === m ? 'active' : ''}
-            aria-pressed={kind === m}
-            onClick={() => setKind(m)}
-          >
-            {m === 'CASH' ? 'Cash' : 'Mobile money'}
-          </button>
-        ))}
-      </div>
+      {manual && (
+        <div className="segmented" role="group" aria-label="Habka lacagta">
+          {(['CASH', 'MOBILE'] as const).map((m) => (
+            <button
+              type="button"
+              key={m}
+              className={kind === m ? 'active' : ''}
+              aria-pressed={kind === m}
+              onClick={() => setKind(m)}
+            >
+              {m === 'CASH' ? 'Cash' : 'Mobile money'}
+            </button>
+          ))}
+        </div>
+      )}
       {kind === 'MOBILE' && (
         <label className="field">
           Telefoonka lacagta
@@ -189,9 +196,16 @@ export function PaymentCapture({
           <Smartphone size={16} /> Dir codsiga lacagta (WaafiPay)
         </button>
       )}
-      <button className="button outline full" disabled={busy || Boolean(processing)}>
-        {busy ? 'Sug…' : `La qaaday (gacan) · ${formatMoney(payment.amount)}`}
-      </button>
+      {!waafi && !manual && (
+        <small className="muted">
+          WaafiPay weli lama xirin. Maamulaha ayaa lacagta ka diiwaangelin kara dashboard-ka.
+        </small>
+      )}
+      {manual && (
+        <button className="button outline full" disabled={busy || Boolean(processing)}>
+          {busy ? 'Sug…' : `La qaaday (gacan) · ${formatMoney(payment.amount)}`}
+        </button>
+      )}
       {sending && detected && (
         <WaafiSendDialog
           paymentId={payment.id}
@@ -213,10 +227,13 @@ export function DeliveryCompletion({
   order,
   endpoint,
   onCompleted,
+  canCollect = false,
 }: {
   order: any;
   endpoint: string;
   onCompleted: () => Promise<void>;
+  /** Owner/manager only: confirm an unpaid order's money was collected by hand. */
+  canCollect?: boolean;
 }) {
   const [busy, setBusy] = useState(false),
     [error, setError] = useState('');
@@ -274,7 +291,13 @@ export function DeliveryCompletion({
           placeholder="Tusaale: Macmiilka ayaa cuntada la guddoonsiiyey."
         />
       </label>
-      {!paid && !refunded && (
+      {!paid && !refunded && !canCollect && (
+        <div className="notice">
+          Lacagta weli lama bixin. Marka hore dir codsiga WaafiPay; dalabka waa la dhammeyn karaa
+          marka lacagtu timaado.
+        </div>
+      )}
+      {!paid && !refunded && canCollect && (
         <label className="check-row cash-confirmation">
           <input type="checkbox" name="confirmPaymentCollected" required />
           <span>
@@ -293,7 +316,7 @@ export function DeliveryCompletion({
           {error}
         </div>
       )}
-      <button className="button full" disabled={busy || refunded}>
+      <button className="button full" disabled={busy || refunded || (!paid && !canCollect)}>
         {busy ? 'Sug…' : 'Xaqiiji in la geeyey'}
         <Check size={16} />
       </button>

@@ -14,21 +14,21 @@ const requests: any[] = [];
 let server: Server,
   delayMs = 0;
 const SECRET = 'test-webhook-secret';
-let r: any, burger: any, cashier: Actor, rider: Actor, otherRider: Actor;
+let r: any, burger: any, zone: any, manager: Actor, cashier: Actor, rider: Actor, otherRider: Actor;
 
 const input = (extra: Partial<StaffOrderInput> = {}): StaffOrderInput => ({
   items: [{ menuItemId: burger.id, quantity: 1, modifierOptionIds: [], specialInstructions: '' }],
   customerName: 'Waafi Guest',
   customerPhone: '615000001',
   deliveryAddress: 'Hodan',
-  deliveryFee: 1,
+  zoneId: zone.id,
   discountPercent: 0,
   withVat: true,
   paymentMethod: 'MOBILE',
   paid: false,
   ...extra,
 });
-async function staff(role: 'CASHIER' | 'RIDER') {
+async function staff(role: 'MANAGER' | 'CASHIER' | 'RIDER') {
   const u = await db.staffUser.create({
     data: {
       restaurantId: r.id,
@@ -102,6 +102,12 @@ beforeAll(async () => {
     where: { restaurantId: r.id },
     data: { quantityOnHand: 500 },
   });
+  zone = await db.deliveryZone.upsert({
+    where: { restaurantId_name: { restaurantId: r.id, name: 'Waafi zone' } },
+    update: { deliveryFee: 1, isActive: true },
+    create: { restaurantId: r.id, name: 'Waafi zone', deliveryFee: 1, etaMinutes: 30 },
+  });
+  manager = await staff('MANAGER');
   cashier = await staff('CASHIER');
   rider = await staff('RIDER');
   otherRider = await staff('RIDER');
@@ -231,7 +237,8 @@ describe('WaafiPay', () => {
     expect((await sendWaafiPayment(o.paymentId!, cashier)).status).toBe('UNKNOWN');
     await expect(sendWaafiPayment(o.paymentId!, cashier)).rejects.toThrow('socda');
     const p = await payment(o.id);
-    await expect(capturePayment(p.id, cashier)).rejects.toThrow('WaafiPay');
+    await expect(capturePayment(p.id, cashier)).rejects.toThrow('maamulaha');
+    await expect(capturePayment(p.id, manager)).rejects.toThrow('WaafiPay');
     const body = JSON.stringify({
       event: 'authorization',
       merchant_uid: 'M0912345',

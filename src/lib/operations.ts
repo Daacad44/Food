@@ -4,7 +4,7 @@ import { db } from './db';
 import { ensure } from './errors';
 import { money, decimal } from './domain';
 import { transaction, audit } from './orders';
-import { digest, type Actor } from './security';
+import { digest, MANAGERS, type Actor } from './security';
 import { PAYMENT_METHODS } from './domain';
 export async function syncPaymentStatus(tx: Prisma.TransactionClient, orderId: string) {
   const order = await tx.order.findUniqueOrThrow({ where: { id: orderId } }),
@@ -44,7 +44,13 @@ export const captureSchema = z
   .strict();
 export type CaptureInput = z.infer<typeof captureSchema>;
 /** Records money received by hand (cash, or a mobile-money transfer checked on the phone). */
+/** Records a payment by hand (cash, or mobile money seen outside WaafiPay): owner or manager only. */
 export async function capturePayment(id: string, user: Actor, input: CaptureInput = {}) {
+  ensure(
+    user.kind === 'staff' && (MANAGERS as readonly string[]).includes(user.role),
+    'Diiwaangelinta lacagta gacanta waxaa sameeya maamulaha kaliya',
+    403,
+  );
   return transaction((tx) => capturePaymentInTransaction(tx, id, user, input));
 }
 export async function capturePaymentInTransaction(

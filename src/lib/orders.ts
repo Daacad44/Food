@@ -10,7 +10,7 @@ import {
   percentDiscount,
   type StaffOrderInput,
 } from './domain';
-import { digest, trackingToken, ORDER_TAKERS, type Actor } from './security';
+import { digest, trackingToken, MANAGERS, ORDER_TAKERS, type Actor } from './security';
 type Tx = Prisma.TransactionClient;
 export async function transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -137,6 +137,14 @@ export async function createOrder(
     403,
   );
   ensure(key.length >= 16 && key.length <= 120, 'Idempotency-Key required');
+  // Orders are paid through WaafiPay. Only the owner or a manager may record a payment by hand
+  // (cash, an already-paid order) or override the delivery fee.
+  const manager = (MANAGERS as readonly string[]).includes(user.role);
+  ensure(
+    manager || (input.paymentMethod === 'MOBILE' && !input.paid && input.deliveryFee === undefined),
+    'Lacagta waxaa lagu bixiyaa WaafiPay. Diiwaangelinta gacanta waxaa sameeya maamulaha kaliya.',
+    403,
+  );
   // Mobile money: the wallet follows the payer's number (61 → EVC Plus, 68 → Jeeb, 63 → ZAAD …).
   const payer =
     input.paymentMethod === 'MOBILE'

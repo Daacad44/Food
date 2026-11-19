@@ -433,7 +433,7 @@ async function handle(request: Request, context: Context) {
       );
     }
     if (p[0] === 'payments' && p[1] && p[2] === 'capture' && method === 'POST') {
-      const u = await requireActor(request, [...ORDER_TAKERS, 'RIDER']);
+      const u = await requireActor(request, [...MANAGERS]);
       return json(await capturePayment(z.uuid().parse(p[1]), u, captureSchema.parse(await body())));
     }
     if (p[0] === 'payments' && p[1] && p[2] === 'refund' && method === 'POST') {

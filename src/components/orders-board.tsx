@@ -400,6 +400,7 @@ export function OrderDetail({ id }: { id: string }) {
                     waafi={restaurant?.paymentModes?.mobile === 'waafi'}
                     orderNumber={o.orderNumber}
                     fallbackPhone={o.guestPhone}
+                    manual={manager}
                   />
                 )}
                 {p.refunds?.map((r: any) => (
@@ -418,6 +419,7 @@ export function OrderDetail({ id }: { id: string }) {
               order={o}
               endpoint={'admin/orders/' + o.id + '/complete-delivery'}
               onCompleted={refresh}
+              canCollect={manager}
             />
           )}
           {taker && open && (
