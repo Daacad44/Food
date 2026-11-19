@@ -16,7 +16,7 @@ import { createHmac, randomUUID } from 'node:crypto';
 import type { Prisma } from '@prisma/client';
 import { db } from './db';
 import { AppError, ensure } from './errors';
-import { audit, transaction } from './orders';
+import { activateOrder, audit, transaction } from './orders';
 import { syncPaymentStatus } from './operations';
 import { constantEqual, type Actor } from './security';
 import { describeOperator, parseSomaliMobile } from './somali-phone';
@@ -177,6 +177,7 @@ async function recordApproved(
     data: { paymentId, providerEventId: eventId, type: 'SUCCEEDED', payload },
   });
   await syncPaymentStatus(tx, p.orderId);
+  await activateOrder(tx, p.orderId);
   return updated;
 }
 

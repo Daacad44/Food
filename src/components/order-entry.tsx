@@ -165,6 +165,19 @@ export function OrderEntry() {
         body: intent,
       });
       delete keys.current[intent];
+      if (created.awaitingPayment && created.paymentId) {
+        // Pay first: nothing is an order until the customer approves on their phone. The cart stays
+        // on screen so a declined or abandoned payment can simply be sent again.
+        setSending({
+          paymentId: created.paymentId,
+          orderId: created.id,
+          orderNumber: created.orderNumber,
+          amount: created.total,
+          phone: payerPhone,
+          print,
+        });
+        return;
+      }
       toast(`Dalabka ${created.orderNumber} waa la kaydiyey`);
       if (waafi && created.paymentId)
         setSending({
@@ -407,7 +420,7 @@ export function OrderEntry() {
             </label>
             <small className="muted">
               {restaurant?.paymentModes?.mobile === 'waafi'
-                ? 'Marka la kaydiyo, codsiga lacagta si toos ah ayaa loogu dirayaa taleefanka macmiilka.'
+                ? 'Marka Save la dhaho, codsiga lacagta si toos ah ayaa loogu diraa macmiilka. Dalabku wuxuu samaysmaa marka uu bixiyo oo keliya.'
                 : 'WaafiPay weli lama xirin: dalabku wuxuu noqonayaa “lama bixin” ilaa maamuluhu ka diiwaangeliyo dashboard-ka.'}
             </small>
           </fieldset>
@@ -493,11 +506,34 @@ export function OrderEntry() {
           amount={sending.amount}
           phone={sending.phone}
           orderNumber={sending.orderNumber}
-          onPaid={() => toast(`Lacagta ${sending.orderNumber} waa la helay`)}
-          onClose={async () => {
+          onPaid={() => {
+            toast(`Lacagta waa la helay · Dalabka ${sending.orderNumber} waa la sameeyey`);
+            reset();
+            void refreshRiders();
+          }}
+          onClose={async (result) => {
             const done = sending;
             setSending(null);
-            if (done.print) setPrinting(await api('admin/orders/' + done.orderId));
+            if (result?.status === 'PAID') {
+              if (done.print) setPrinting(await api('admin/orders/' + done.orderId));
+              return;
+            }
+            // Not paid: drop the draft, keep the cart so staff can try again.
+            try {
+              const r = await api('orders/' + done.orderId + '/abandon', {
+                method: 'POST',
+                body: '{}',
+              });
+              if (r.status === 'ABANDONED')
+                setError('Lacagta lama bixin, dalabkana lama samayn. Isku day mar kale.');
+              else {
+                // It was paid in the meantime (webhook): the order exists.
+                toast(`Dalabka ${done.orderNumber} waa la sameeyey`);
+                reset();
+              }
+            } catch (e) {
+              setError((e as Error).message);
+            }
           }}
         />
       )}

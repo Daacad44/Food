@@ -294,7 +294,10 @@ export async function finance(restaurantId: string) {
     }),
     db.expense.findMany({ where: { restaurantId } }),
     db.purchase.findMany({ where: { restaurantId, status: 'RECEIVED' } }),
-    db.order.findMany({ where: { restaurantId }, include: { items: true } }),
+    db.order.findMany({
+      where: { restaurantId, NOT: { status: 'AWAITING_PAYMENT' } },
+      include: { items: true },
+    }),
     db.inventoryMovement.findMany({
       where: {
         item: { restaurantId },

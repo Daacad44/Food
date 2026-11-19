@@ -93,7 +93,11 @@ export async function listUsers(user: Actor) {
     }),
     db.order.groupBy({
       by: ['handledById'],
-      where: { restaurantId: user.restaurantId, handledById: { not: null } },
+      where: {
+        restaurantId: user.restaurantId,
+        handledById: { not: null },
+        NOT: { status: 'AWAITING_PAYMENT' },
+      },
       _count: { _all: true },
     }),
     db.delivery.groupBy({
@@ -141,7 +145,13 @@ export async function getUser(id: string, user: Actor) {
       orderBy: { createdAt: 'desc' },
       take: 40,
     }),
-    db.order.count({ where: { restaurantId: user.restaurantId, handledById: id } }),
+    db.order.count({
+      where: {
+        restaurantId: user.restaurantId,
+        handledById: id,
+        NOT: { status: 'AWAITING_PAYMENT' },
+      },
+    }),
     db.delivery.count({ where: { riderId: id, status: 'DELIVERED' } }),
     db.delivery.count({ where: { riderId: id, order: { status: 'OUT_FOR_DELIVERY' } } }),
   ]);

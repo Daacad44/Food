@@ -2,7 +2,7 @@ import { beforeAll, afterAll, afterEach, describe, it, expect } from 'vitest';
 import { createServer, type Server } from 'node:http';
 import { createHmac, randomUUID } from 'node:crypto';
 import { db } from '../src/lib/db';
-import { createOrder, restaurant } from '../src/lib/orders';
+import { abandonDraft, createOrder, restaurant } from '../src/lib/orders';
 import { capturePayment } from '../src/lib/operations';
 import { passwordHash, type Actor } from '../src/lib/security';
 import { describeOperator, parseSomaliMobile } from '../src/lib/somali-phone';
@@ -288,6 +288,64 @@ describe('WaafiPay', () => {
     const c = await createOrder(input(), randomUUID(), cashier);
     await db.order.update({ where: { id: c.id }, data: { status: 'CANCELLED' } });
     await expect(sendWaafiPayment(c.paymentId!, cashier)).rejects.toThrow('joojiyey');
+  });
+  it('makes the order only after the customer pays: a hidden draft until then', async () => {
+    const o = await createOrder(input({ riderId: rider.id }), randomUUID(), cashier);
+    expect(o.awaitingPayment).toBe(true);
+    let saved = await db.order.findUniqueOrThrow({
+      where: { id: o.id },
+      include: { delivery: true },
+    });
+    expect(saved).toMatchObject({ status: 'AWAITING_PAYMENT', stockDeducted: false });
+    expect(saved.delivery).toMatchObject({ status: 'PENDING', riderId: rider.id });
+    // Not on any board list until it is paid.
+    const { viewStatuses } = await import('../src/lib/domain');
+    expect(Object.values(viewStatuses).flat()).not.toContain('AWAITING_PAYMENT');
+    expect(await db.auditLog.count({ where: { entityId: o.id, action: 'ORDER_CREATE' } })).toBe(0);
+    expect((await sendWaafiPayment(o.paymentId!, cashier)).status).toBe('PAID');
+    saved = await db.order.findUniqueOrThrow({ where: { id: o.id }, include: { delivery: true } });
+    expect(saved).toMatchObject({
+      status: 'OUT_FOR_DELIVERY',
+      paymentStatus: 'PAID',
+      stockDeducted: true,
+    });
+    expect(saved.confirmedAt).not.toBeNull();
+    expect(saved.delivery).toMatchObject({ status: 'ASSIGNED', riderId: rider.id });
+    expect(await db.auditLog.count({ where: { entityId: o.id, action: 'ORDER_CREATE' } })).toBe(1);
+  });
+  it('drops a draft the customer did not pay, but never while an answer is outstanding', async () => {
+    const o = await createOrder(input({ customerPhone: '615000002' }), randomUUID(), cashier);
+    expect((await sendWaafiPayment(o.paymentId!, cashier)).status).toBe('DECLINED');
+    expect(await abandonDraft(o.id, cashier)).toEqual({ status: 'ABANDONED' });
+    expect(await payment(o.id)).toMatchObject({ status: 'FAILED' });
+    expect((await db.order.findUniqueOrThrow({ where: { id: o.id } })).status).toBe(
+      'AWAITING_PAYMENT',
+    );
+    const lost = await createOrder(input(), randomUUID(), cashier);
+    process.env.WAAFI_TIMEOUT_MS = '100';
+    delayMs = 600;
+    expect((await sendWaafiPayment(lost.paymentId!, cashier)).status).toBe('UNKNOWN');
+    await expect(abandonDraft(lost.id, cashier)).rejects.toThrow('WaafiPay');
+    // The late webhook still turns it into an order.
+    const p = await payment(lost.id),
+      body = JSON.stringify({
+        event: 'authorization',
+        payment: { transaction_id: 'TXLATE', amount: 8.88, reference_id: `${p.id}-1` },
+      }),
+      ts = String(Math.floor(Date.now() / 1000)),
+      id = randomUUID();
+    await handleWaafiWebhook(
+      body,
+      new Headers({
+        'x-webhook-timestamp': ts,
+        'x-webhook-event-id': id,
+        'x-webhook-signature': createHmac('sha256', SECRET)
+          .update(`${ts}.${id}.${body}`)
+          .digest('hex'),
+      }),
+    );
+    expect((await db.order.findUniqueOrThrow({ where: { id: lost.id } })).status).toBe('CONFIRMED');
+    expect(await abandonDraft(lost.id, cashier)).toEqual({ status: 'CONFIRMED' });
   });
   it('explains wrong credentials and fails closed without them', async () => {
     const o = await createOrder(input(), randomUUID(), cashier);
