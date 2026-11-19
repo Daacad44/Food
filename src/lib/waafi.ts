@@ -53,6 +53,16 @@ export function waafiStatus() {
     env: c.env,
     merchant: c.merchantUid ? c.merchantUid.slice(0, 3) + '•••' + c.merchantUid.slice(-2) : null,
     webhook: Boolean(c.webhookSecret),
+    /** Names (never values) of the settings the server can't see, to tell staff what to fix. */
+    missing: (
+      [
+        ['WAAFI_MERCHANT_UID', c.merchantUid],
+        ['WAAFI_API_USER_ID', c.apiUserId],
+        ['WAAFI_API_KEY', c.apiKey],
+      ] as const
+    )
+      .filter(([, v]) => !v)
+      .map(([k]) => k),
   };
 }
 
