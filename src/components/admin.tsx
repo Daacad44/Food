@@ -20,6 +20,7 @@ import {
 import { api, useData, useStore } from './store';
 import { NewRiderDialog, DeliveryCompletion } from './delivery-controls';
 import { ForcePasswordChange } from './users';
+import { WaafiSendDialog } from './waafi';
 import { Loading, Notice, Wordmark, landing, roleLabel, viewLabel } from './shared';
 import { formatMoney, orderView, paymentMethodLabel } from '@/lib/domain';
 const groups: { title: string; items: [href: string, label: string, roles: string[]][] }[] = [
@@ -945,21 +946,22 @@ export function Payments() {
               <Link className="small-button" href={'/admin/orders/' + p.orderId}>
                 Details
               </Link>
-              {['PENDING', 'UNPAID'].includes(p.status) && user.role !== 'ACCOUNTANT' && (
-                <button
-                  className="small-button"
-                  onClick={async () => {
-                    try {
-                      await api('payments/' + p.id + '/capture', { method: 'POST', body: '{}' });
-                      await refresh();
-                    } catch (e) {
-                      toast((e as Error).message);
-                    }
-                  }}
-                >
-                  Cash collected
-                </button>
-              )}
+              {['PENDING', 'UNPAID'].includes(p.status) &&
+                ['OWNER', 'MANAGER'].includes(user.role) && (
+                  <button
+                    className="small-button"
+                    onClick={async () => {
+                      try {
+                        await api('payments/' + p.id + '/capture', { method: 'POST', body: '{}' });
+                        await refresh();
+                      } catch (e) {
+                        toast((e as Error).message);
+                      }
+                    }}
+                  >
+                    La qaaday (gacan)
+                  </button>
+                )}
             </>
           )}
         />
@@ -1230,7 +1232,9 @@ const riderState: Record<string, string> = {
 };
 export function Rider({ section }: { section: string }) {
   const { data, error, refresh } = useData<any[]>('rider/orders', 5000),
+    { data: restaurant } = useData<any>('restaurant'),
     { user, toast } = useStore(),
+    [sendFor, setSendFor] = useState<any>(null),
     [openId, setOpenId] = useState(''),
     [busy, setBusy] = useState(false);
   async function run(action: () => Promise<unknown>) {
@@ -1290,6 +1294,35 @@ export function Rider({ section }: { section: string }) {
             </li>
           ))}
         </ul>
+        {open.status === 'OUT_FOR_DELIVERY' &&
+          unpaid &&
+          restaurant?.paymentModes?.mobile === 'waafi' &&
+          open.payments
+            .filter((payment: any) => ['PENDING', 'UNPAID'].includes(payment.status))
+            .slice(0, 1)
+            .map((payment: any) => (
+              <button
+                key={payment.id}
+                className="rider-primary rider-waafi"
+                disabled={busy}
+                onClick={() => setSendFor(payment)}
+              >
+                Dir codsiga lacagta (WaafiPay)
+              </button>
+            ))}
+        {sendFor && (
+          <WaafiSendDialog
+            paymentId={sendFor.id}
+            amount={sendFor.amount}
+            phone={sendFor.providerReference || open.guestPhone}
+            orderNumber={open.orderNumber}
+            onPaid={() => toast('Lacagta waa la helay')}
+            onClose={async () => {
+              setSendFor(null);
+              await refresh();
+            }}
+          />
+        )}
         {open.status === 'OUT_FOR_DELIVERY' && (
           <DeliveryCompletion
             order={open}
@@ -1388,6 +1421,25 @@ export function SettingsPage() {
         title="The details that make Botan"
         description="Magaca, telefoonka iyo cinwaanka risiidka, VAT-ka iyo saacadaha."
       />
+      <div className="panel padded waafi-status">
+        <h2>WaafiPay</h2>
+        {data.paymentModes?.waafi?.configured ? (
+          <p>
+            <span className="user-status on">Waa xiran yahay</span> ·{' '}
+            {data.paymentModes.waafi.env === 'production'
+              ? 'Production (lacag dhab ah)'
+              : 'Sandbox (tijaabo)'}{' '}
+            · Merchant {data.paymentModes.waafi.merchant}
+            {!data.paymentModes.waafi.webhook && ' · Webhook secret lama gelin'}
+          </p>
+        ) : (
+          <p>
+            <span className="user-status off">Lama xirin</span> · Mobile money gacanta ayaa lagu
+            diiwaangelinayaa. Geli WAAFI_MERCHANT_UID, WAAFI_API_USER_ID iyo WAAFI_API_KEY
+            server-ka.
+          </p>
+        )}
+      </div>
       <form
         className="panel padded"
         onSubmit={async (e) => {

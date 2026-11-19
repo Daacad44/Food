@@ -42,13 +42,28 @@ Do not deploy the local embedded PostgreSQL process to Vercel. No Redis or persi
 - Review real prices, contact details, delivery zones (fees), VAT rate and food photography before going live.
 - Set up off-site backups, retention, monitoring and a scheduled restore exercise. Enable Supabase backups/PITR according to the selected plan.
 
-## Payments: cash, EVC Plus, ZAAD, SAHAL
+## Payments: cash and WaafiPay mobile money
 
-All four are recorded **manually** today: the cashier picks the method and the payer's phone, and the money is
-marked _La qaaday_ when it is counted or seen on the phone (at order time, from the order page, or by the rider on
-delivery). `src/lib/payments.ts` is the place to automate a provider later: implement its `PaymentProvider`
-(send the payment prompt, verify the signed callback) and register it. `POST /api/v1/payments/:id/initialize` and
-`POST /api/v1/webhooks/payments/:method` already route through it and answer 501 until a provider is configured.
-SMS, email and WhatsApp are not provisioned. Do not enable a payment method until an adapter validates raw-body signatures, enforces callback idempotency, verifies currency/amount/order ownership and reconciles refunds against actual provider responses. Never implement a webhook that trusts a client-provided `paid` flag.
+Staff choose **Cash** or **Mobile money**. For mobile money the wallet follows the payer's number:
+61/77/78 Hormuud EVC Plus · 68 Somnet Jeeb · 63 Telesom ZAAD · 67 Soltelco Kaash Plus · 60/72/90 Golis SAHAL ·
+70 Durdur Kayd · 62/65/66/76 Somtel eDahab · 69 NationLink e-Maal · 71/75 Amtel MyCash.
 
-The system has not been deployed to a live Vercel/Supabase project in this session because those project credentials were unavailable.
+With WaafiPay connected, **Dir hadda** (after Save), **Dir codsiga lacagta** on the order page and on the rider's phone
+send `API_PURCHASE` to WaafiPay; the customer's phone asks for their PIN and the payment is recorded when WaafiPay
+answers `APPROVED`. One request at a time per payment (3-minute lock); declines are shown in plain words and can be
+retried from another number; the amount always comes from the order on the server.
+
+Set these on the server (Coolify → Environment Variables, or Vercel → Settings → Environment Variables), then redeploy:
+
+| Variable               | Value                                                                                       |
+| ---------------------- | ------------------------------------------------------------------------------------------- |
+| `WAAFI_MERCHANT_UID`   | Merchant UID from WaafiPay                                                                  |
+| `WAAFI_API_USER_ID`    | API user ID from WaafiPay                                                                   |
+| `WAAFI_API_KEY`        | API key from WaafiPay                                                                       |
+| `WAAFI_ENV`            | `sandbox` while testing, `production` for real money                                        |
+| `WAAFI_WEBHOOK_SECRET` | Secret returned when you register `https://YOUR-DOMAIN/api/v1/webhooks/waafi` with WaafiPay |
+
+The webhook records payments whose direct answer was lost (e.g. a timeout); it is verified with HMAC-SHA256 and
+stale or repeated events are rejected. Settings shows whether WaafiPay is connected. Without the variables, mobile
+money is recorded by hand as before. Refunds are recorded in Botan; reversing the money in WaafiPay is done in the
+WaafiPay merchant portal. SMS, email and WhatsApp are not provisioned.

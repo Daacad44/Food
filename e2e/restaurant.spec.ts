@@ -32,10 +32,13 @@ test('signing in opens the order screen; a delivery order is taken and priced', 
   await page.getByLabel('Telefoonka macmiilka').fill('615442493');
   await page.getByLabel('Magaca', { exact: true }).fill('Browser Guest');
   await page.getByLabel(/Cinwaanka/).fill('Bakaaro, agagaarka suuqa');
-  await page.getByLabel('Delivery fee ($)').fill('1');
-  await page.getByRole('button', { name: 'EVC Plus' }).click();
-  // 19.00 + 8.50 = 27.50; 5% VAT 1.38; delivery 1.00
-  await expect(page.locator('.take-total dd')).toHaveText('$29.88');
+  // No delivery-fee box and no cash option: the zone sets the fee and payment goes through WaafiPay.
+  await expect(page.getByLabel('Delivery fee ($)')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Cash' })).toHaveCount(0);
+  await page.getByLabel('Xaafadda').selectOption({ label: 'Bakaaro · $1.50' });
+  await expect(page.getByText('Hormuud · EVC Plus')).toBeVisible();
+  // 19.00 + 8.50 = 27.50; 5% VAT 1.38; delivery 1.50
+  await expect(page.locator('.take-total dd')).toHaveText('$30.38');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByRole('status').filter({ hasText: 'waa la kaydiyey' })).toBeVisible();
   await expect(page.locator('.take-line')).toHaveCount(0);

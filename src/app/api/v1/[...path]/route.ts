@@ -41,7 +41,9 @@ import {
   finance,
   processOutbox,
 } from '@/lib/operations';
-import { paymentModes, requireProvider } from '@/lib/payments';
+import { paymentModes } from '@/lib/payments';
+import { handleWaafiWebhook, sendWaafiPayment } from '@/lib/waafi';
+import { describeOperator, parseSomaliMobile } from '@/lib/somali-phone';
 import {
   bulkUsers,
   changeMyPassword,
@@ -57,6 +59,8 @@ import {
 } from '@/lib/users';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+// A WaafiPay request waits for the customer to enter their PIN.
+export const maxDuration = 150;
 type Context = { params: Promise<{ path: string[] }> };
 const DAY = /^\d{4}-\d{2}-\d{2}$/;
 /** Order filters shared by the list and its tab counts. Days are Africa/Mogadishu (UTC+3). */
@@ -429,7 +433,7 @@ async function handle(request: Request, context: Context) {
       );
     }
     if (p[0] === 'payments' && p[1] && p[2] === 'capture' && method === 'POST') {
-      const u = await requireActor(request, [...ORDER_TAKERS, 'RIDER']);
+      const u = await requireActor(request, [...MANAGERS]);
       return json(await capturePayment(z.uuid().parse(p[1]), u, captureSchema.parse(await body())));
     }
     if (p[0] === 'payments' && p[1] && p[2] === 'refund' && method === 'POST') {
@@ -438,76 +442,32 @@ async function handle(request: Request, context: Context) {
         await refundPayment(p[1], await body(), request.headers.get('idempotency-key') || '', u),
       );
     }
-    if (p[0] === 'payments' && p[1] && p[2] === 'initialize' && method === 'POST') {
-      const u = await requireActor(request, ORDER_TAKERS);
-      const payment = await db.payment.findFirst({
-        where: { id: z.uuid().parse(p[1]), order: { restaurantId: u.restaurantId } },
-        include: { order: true },
-      });
-      ensure(payment, 'Payment not found', 404);
-      ensure(['PENDING', 'UNPAID'].includes(payment.status), 'Payment is not open', 409);
-      ensure(payment.providerReference, 'Geli telefoonka lacag bixiyaha');
-      const result = await requireProvider(payment.method).initiate({
-        paymentId: payment.id,
-        orderNumber: payment.order.orderNumber,
-        amountCents: Math.round(Number(payment.amount) * 100),
-        payerPhone: payment.providerReference,
-      });
-      await transaction(async (tx) => {
-        await tx.payment.update({
-          where: { id: payment.id },
-          data: {
-            provider: payment.method,
-            providerTransactionId: result.providerTransactionId,
-            status: 'PENDING',
-          },
-        });
-        await audit(tx, u, 'PAYMENT_INITIATE', 'Payment', payment.id, { method: payment.method });
-      });
-      return json({ ok: true, status: 'PENDING' });
+    // Ask the customer's phone to pay through WaafiPay (waits for their PIN, up to ~2 minutes).
+    if (
+      p[0] === 'payments' &&
+      p[1] &&
+      (p[2] === 'send' || p[2] === 'initialize') &&
+      method === 'POST'
+    ) {
+      const u = await requireActor(request, [...ORDER_TAKERS, 'RIDER']);
+      const d = z
+        .object({ phone: z.string().trim().max(30).optional() })
+        .strict()
+        .parse(await body());
+      await limit(`waafi:${u.id}`, 30, 300);
+      return json(await sendWaafiPayment(z.uuid().parse(p[1]), u, d.phone));
     }
-    if (p[0] === 'webhooks' && p[1] === 'payments' && p[2] && method === 'POST') {
-      // Throws 501 until a provider is implemented and configured (see lib/payments.ts).
-      const provider = requireProvider(p[2].toUpperCase());
+    if (path === 'webhooks/waafi' && method === 'POST') {
       ensure(Number(request.headers.get('content-length') || 0) <= 65536, 'Request too large', 413);
-      const verified = await provider.verifyCallback(await request.text(), request.headers);
-      await transaction(async (tx) => {
-        const payment = await tx.payment.findUnique({
-          where: { providerTransactionId: verified.providerTransactionId },
-        });
-        ensure(payment && payment.method === provider.method, 'Payment not found', 404);
-        if (payment.status !== 'PENDING') return;
-        if (verified.status === 'FAILED') {
-          await tx.payment.update({ where: { id: payment.id }, data: { status: 'FAILED' } });
-          return;
-        }
-        ensure(
-          verified.amountCents === Math.round(Number(payment.amount) * 100),
-          'Amount mismatch',
-          409,
-        );
-        await tx.payment.update({
-          where: { id: payment.id },
-          data: { status: 'PAID', paidAt: new Date() },
-        });
-        const paid = await tx.payment.findMany({
-          where: { orderId: payment.orderId, paidAt: { not: null } },
-        });
-        const order = await tx.order.findUniqueOrThrow({ where: { id: payment.orderId } });
-        const captured = paid.reduce((s, x) => s + Math.round(Number(x.amount) * 100), 0);
-        await tx.order.update({
-          where: { id: payment.orderId },
-          data: {
-            paymentStatus:
-              captured >= Math.round(Number(order.total) * 100)
-                ? 'PAID'
-                : captured
-                  ? 'PENDING'
-                  : 'UNPAID',
-          },
-        });
-      });
-      return json({ ok: true });
+      const raw = await request.text();
+      ensure(raw.length <= 65536, 'Request too large', 413);
+      return json(await handleWaafiWebhook(raw, request.headers));
+    }
+    /** Works out the operator and wallet of a number for the order screen. */
+    if (path === 'payments/detect' && method === 'GET') {
+      await requireActor(request, [...ORDER_TAKERS, 'RIDER']);
+      const n = parseSomaliMobile(url.searchParams.get('phone'));
+      return json(n ? { ...n, label: describeOperator(n) } : null);
     }
     if (p[0] === 'webhooks') throw new AppError(404, 'Endpoint not found');
     // ---- Reports, menu admin, pantry, purchasing ----

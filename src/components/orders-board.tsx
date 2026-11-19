@@ -394,7 +394,14 @@ export function OrderDetail({ id }: { id: string }) {
                   {p.status === 'PAID' ? 'La qaaday' : p.status}
                 </span>
                 {taker && open && ['PENDING', 'UNPAID'].includes(p.status) && (
-                  <PaymentCapture payment={p} onDone={refresh} />
+                  <PaymentCapture
+                    payment={p}
+                    onDone={refresh}
+                    waafi={restaurant?.paymentModes?.mobile === 'waafi'}
+                    orderNumber={o.orderNumber}
+                    fallbackPhone={o.guestPhone}
+                    manual={manager}
+                  />
                 )}
                 {p.refunds?.map((r: any) => (
                   <small className="muted" key={r.id}>
@@ -412,6 +419,7 @@ export function OrderDetail({ id }: { id: string }) {
               order={o}
               endpoint={'admin/orders/' + o.id + '/complete-delivery'}
               onCompleted={refresh}
+              canCollect={manager}
             />
           )}
           {taker && open && (

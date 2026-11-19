@@ -41,12 +41,31 @@ export function orderView(status: string): OrderView {
 }
 
 /** Mobile money is recorded by hand until a provider API is connected (see lib/payments.ts). */
-export const PAYMENT_METHODS = ['CASH', 'EVC_PLUS', 'ZAAD', 'SAHAL'] as const;
+/** Every Somali mobile-money wallet; which one is decided by the payer's number (lib/somali-phone). */
+export const MOBILE_WALLETS = [
+  'EVC_PLUS',
+  'JEEB',
+  'ZAAD',
+  'KAASH_PLUS',
+  'SAHAL',
+  'KAYD',
+  'EDAHAB',
+  'EMAAL',
+  'MYCASH',
+] as const;
+export const PAYMENT_METHODS = ['CASH', ...MOBILE_WALLETS] as const;
 export const paymentMethodLabel: Record<string, string> = {
   CASH: 'Cash',
+  MOBILE: 'Mobile money',
   EVC_PLUS: 'EVC Plus',
+  JEEB: 'Jeeb',
   ZAAD: 'ZAAD',
+  KAASH_PLUS: 'Kaash Plus',
   SAHAL: 'SAHAL',
+  KAYD: 'Kayd',
+  EDAHAB: 'eDahab',
+  EMAAL: 'e-Maal',
+  MYCASH: 'MyCash',
   CARD: 'Card',
   OTHER: 'Other',
 };
@@ -76,8 +95,9 @@ export const staffOrderSchema = z
     deliveryFee: z.number().min(0).max(1000).optional(),
     discountPercent: z.number().min(0).max(100).default(0),
     withVat: z.boolean().default(true),
-    paymentMethod: z.enum(PAYMENT_METHODS).default('CASH'),
-    /** The number the customer pays from (EVC Plus / ZAAD / SAHAL). */
+    /** MOBILE: the wallet is worked out from the payer's number. */
+    paymentMethod: z.enum([...PAYMENT_METHODS, 'MOBILE']).default('CASH'),
+    /** The number the customer pays from (any Somali wallet). */
     paymentPhone: phone.optional(),
     /** Money already received when the order is saved. */
     paid: z.boolean().default(false),

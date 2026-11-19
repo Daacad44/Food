@@ -54,6 +54,12 @@ enum PaymentMethod {
   SAHAL
   CARD
   OTHER
+  JEEB
+  KAASH_PLUS
+  KAYD
+  EDAHAB
+  EMAAL
+  MYCASH
 }
 
 enum PaymentEventType {
@@ -413,6 +419,12 @@ model Payment {
   providerTransactionId String?        @unique
   providerReference     String?
   idempotencyKey        String         @unique
+  /// WaafiPay requests sent to the customer's phone
+  attempts              Int            @default(0)
+  /// set while a request waits for the customer's PIN; blocks a second request
+  processingAt          DateTime?
+  /// the last decline or error message from the provider
+  lastError             String?
   paidAt                DateTime?
   createdAt             DateTime       @default(now())
   updatedAt             DateTime       @updatedAt

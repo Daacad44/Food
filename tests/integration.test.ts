@@ -23,6 +23,7 @@ let owner: Actor,
   rider: Actor,
   otherRider: Actor,
   burger: any,
+  zone: any,
   r: any,
   stock: any;
 let ownerCookie = '',
@@ -47,16 +48,19 @@ async function call(
     params: Promise.resolve({ path: path.split('?')[0].split('/') }),
   });
 }
-/** One $7.50 burger, 5% VAT, $1 delivery: $8.88 (7.50 + 0.38 + 1.00). */
+/**
+ * One $7.50 burger, 5% VAT, $1 delivery zone: $8.88 (7.50 + 0.38 + 1.00). Paid by mobile money
+ * through WaafiPay, the only way a cashier may take an order.
+ */
 const input = (extra: Partial<StaffOrderInput> = {}): StaffOrderInput => ({
   items: [{ menuItemId: burger.id, quantity: 1, modifierOptionIds: [], specialInstructions: '' }],
   customerName: 'Integration Guest',
   customerPhone: '+252610001234',
   deliveryAddress: 'Bakaaro, near the market',
-  deliveryFee: 1,
+  zoneId: zone.id,
   discountPercent: 0,
   withVat: true,
-  paymentMethod: 'CASH',
+  paymentMethod: 'MOBILE',
   paid: false,
   ...extra,
 });
@@ -73,6 +77,11 @@ beforeAll(async () => {
   await db.restaurantSettings.update({ where: { restaurantId: r.id }, data: { taxRate: 5 } });
   burger = await db.menuItem.findUniqueOrThrow({
     where: { restaurantId_slug: { restaurantId: r.id, slug: 'beef-burger' } },
+  });
+  zone = await db.deliveryZone.upsert({
+    where: { restaurantId_name: { restaurantId: r.id, name: 'Integration zone' } },
+    update: { deliveryFee: 1, isActive: true },
+    create: { restaurantId: r.id, name: 'Integration zone', deliveryFee: 1, etaMinutes: 30 },
   });
   stock = await db.inventoryItem.findFirstOrThrow({
     where: { restaurantId: r.id, name: 'Burger patties' },
@@ -153,12 +162,12 @@ describe('taking a delivery order', () => {
   });
   it('records mobile money: method and payer number, paid or not yet', async () => {
     await expect(
-      createOrder(input({ paymentMethod: 'EVC_PLUS' }), randomUUID(), operator),
+      createOrder(input({ paymentMethod: 'EVC_PLUS' }), randomUUID(), manager),
     ).rejects.toThrow('telefoonka');
     const paid = await createOrder(
       input({ paymentMethod: 'ZAAD', paymentPhone: '+252634000111', paid: true }),
       randomUUID(),
-      operator,
+      manager,
     );
     const o = await reload(paid.id);
     expect(o.paymentStatus).toBe('PAID');
@@ -168,6 +177,27 @@ describe('taking a delivery order', () => {
       status: 'PAID',
       provider: 'manual',
     });
+  });
+  it('makes cashiers take payment through WaafiPay; only managers record it by hand', async () => {
+    for (const extra of [
+      { paymentMethod: 'CASH' as const },
+      { paid: true },
+      { paymentMethod: 'EVC_PLUS' as const, paymentPhone: '+252615000000' },
+      { deliveryFee: 0 },
+    ])
+      await expect(createOrder(input(extra), randomUUID(), operator)).rejects.toThrow('WaafiPay');
+    const o = await createOrder(input(), randomUUID(), operator);
+    const p = (await reload(o.id)).payments[0];
+    expect(p).toMatchObject({ method: 'EVC_PLUS', status: 'PENDING' });
+    expect((await call(`payments/${p.id}/capture`, 'POST', {}, operatorCookie)).status).toBe(403);
+    expect((await call(`payments/${p.id}/capture`, 'POST', {}, riderCookie)).status).toBe(403);
+    await expect(
+      completeDelivery(o.id, { proofNote: 'Handed over', confirmPaymentCollected: true }, operator),
+    ).rejects.toThrow('WaafiPay');
+    await capturePayment(p.id, manager, { method: 'CASH' });
+    expect((await reload(o.id)).paymentStatus).toBe('PAID');
+    await completeDelivery(o.id, { proofNote: 'Handed over' }, operator);
+    expect((await reload(o.id)).status).toBe('COMPLETED');
   });
   it('deducts stock once and returns it when a cashier cancels', async () => {
     const before = Number(
@@ -250,19 +280,22 @@ describe('riders and delivery', () => {
       ),
     ).rejects.toThrow();
   });
-  it('lets only the assigned rider complete, with payment confirmation, once', async () => {
+  it('lets only the assigned rider complete, once the order is paid, once', async () => {
     const o = await createOrder(
-      input({ paymentMethod: 'EVC_PLUS', paymentPhone: '+252615442493', riderId: rider.id }),
+      input({ paymentPhone: '+252615442493', riderId: rider.id }),
       randomUUID(),
       operator,
     );
     await expect(
       completeDelivery(o.id, { proofNote: 'Delivered', confirmPaymentCollected: true }, otherRider),
     ).rejects.toThrow('access denied');
-    await expect(completeDelivery(o.id, { proofNote: 'Delivered' }, rider)).rejects.toThrow(
-      'lacagta',
-    );
-    const body = { proofNote: 'Handed to customer', confirmPaymentCollected: true };
+    // A rider can't say "the customer paid me": the money comes through WaafiPay or a manager.
+    await expect(
+      completeDelivery(o.id, { proofNote: 'Delivered', confirmPaymentCollected: true }, rider),
+    ).rejects.toThrow('WaafiPay');
+    const p = (await reload(o.id)).payments[0];
+    await capturePayment(p.id, manager);
+    const body = { proofNote: 'Handed to customer' };
     await Promise.all([completeDelivery(o.id, body, rider), completeDelivery(o.id, body, rider)]);
     const saved = await reload(o.id);
     expect(saved.status).toBe('COMPLETED');
@@ -272,22 +305,22 @@ describe('riders and delivery', () => {
     expect(saved.payments[0].method).toBe('EVC_PLUS');
   });
   it('lets an order taker confirm delivery when the rider has no app', async () => {
-    const o = await createOrder(input({ paid: true }), randomUUID(), operator);
+    const o = await createOrder(input({ paid: true }), randomUUID(), manager);
     await completeDelivery(o.id, { proofNote: 'Rider phoned it in' }, operator);
     expect((await reload(o.id)).status).toBe('COMPLETED');
     await expect(assignRider(o.id, rider.id, operator)).rejects.toThrow('looma qoondeyn');
   });
-  it('captures split payments and switches method by hand', async () => {
-    const o = await createOrder(input(), randomUUID(), operator),
+  it('lets a manager capture split payments and switch method by hand', async () => {
+    const o = await createOrder(input({ paymentMethod: 'CASH' }), randomUUID(), manager),
       p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
-    await capturePayment(p.id, operator, { amount: 3 });
+    await capturePayment(p.id, manager, { amount: 3 });
     expect((await reload(o.id)).paymentStatus).toBe('PENDING');
     const rest = await db.payment.findFirstOrThrow({ where: { orderId: o.id, status: 'PENDING' } });
     expect(Number(rest.amount)).toBe(5.88);
-    await expect(capturePayment(rest.id, operator, { method: 'SAHAL' })).rejects.toThrow(
+    await expect(capturePayment(rest.id, manager, { method: 'SAHAL' })).rejects.toThrow(
       'telefoonka',
     );
-    await capturePayment(rest.id, operator, { method: 'SAHAL', reference: '+252907000000' });
+    await capturePayment(rest.id, manager, { method: 'SAHAL', reference: '+252907000000' });
     expect((await reload(o.id)).paymentStatus).toBe('PAID');
     const captured = await db.payment.findUniqueOrThrow({ where: { id: rest.id } });
     expect(captured).toMatchObject({ method: 'SAHAL', providerReference: '+252907000000' });
@@ -296,7 +329,7 @@ describe('riders and delivery', () => {
 
 describe('back office', () => {
   it('refunds partially and fully, idempotently', async () => {
-    const o = await createOrder(input({ paid: true }), randomUUID(), operator),
+    const o = await createOrder(input({ paid: true }), randomUUID(), manager),
       p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
     const key = randomUUID();
     const refund = await refundPayment(p.id, { amount: 2, reason: 'Test partial' }, key, owner);
@@ -467,7 +500,7 @@ describe('HTTP: authorization, the orders board and payments', () => {
       (await call(`admin/orders/${o.id}/status`, 'PATCH', { status: 'CANCELLED' }, operatorCookie))
         .status,
     ).toBe(200);
-    const paid = await createOrder(input({ paid: true }), randomUUID(), operator);
+    const paid = await createOrder(input({ paid: true }), randomUUID(), manager);
     const payment = await db.payment.findFirstOrThrow({ where: { orderId: paid.id } });
     const refund = await call(
       `payments/${payment.id}/refund`,
@@ -505,16 +538,10 @@ describe('HTTP: authorization, the orders board and payments', () => {
     expect(found).toMatchObject({ deliveryAddress: 'Hodan, KM4', orderCount: 1 });
   });
   it('fails closed for mobile-money automation until a provider is configured', async () => {
-    const o = await createOrder(
-      input({ paymentMethod: 'EVC_PLUS', paymentPhone: '+252615000000' }),
-      randomUUID(),
-      operator,
-    );
+    const o = await createOrder(input({ paymentPhone: '+252615000000' }), randomUUID(), operator);
     const p = await db.payment.findFirstOrThrow({ where: { orderId: o.id } });
-    expect((await call(`payments/${p.id}/initialize`, 'POST', {}, operatorCookie)).status).toBe(
-      501,
-    );
-    expect((await call('webhooks/payments/evc_plus', 'POST', { status: 'PAID' })).status).toBe(501);
+    expect((await call(`payments/${p.id}/send`, 'POST', {}, operatorCookie)).status).toBe(501);
+    expect((await call('webhooks/waafi', 'POST', { event: 'authorization' })).status).toBe(501);
     expect((await db.payment.findUniqueOrThrow({ where: { id: p.id } })).status).toBe('PENDING');
     expect((await call('payments/' + p.id + '/capture', 'POST', {})).status).toBe(401);
   });
