@@ -421,7 +421,7 @@ export function OrderEntry() {
             <small className="muted">
               {restaurant?.paymentModes?.mobile === 'waafi'
                 ? 'Marka Save la dhaho, codsiga lacagta si toos ah ayaa loogu diraa macmiilka. Dalabku wuxuu samaysmaa marka uu bixiyo oo keliya.'
-                : 'WaafiPay weli lama xirin: dalabku wuxuu noqonayaa “lama bixin” ilaa maamuluhu ka diiwaangeliyo dashboard-ka.'}
+                : `WaafiPay lama xirin (server-ku ma arko: ${(restaurant?.paymentModes?.waafi?.missing || []).join(', ') || '—'}). Dalabku wuxuu noqonayaa “lama bixin”.`}
             </small>
           </fieldset>
 
@@ -525,7 +525,11 @@ export function OrderEntry() {
                 body: '{}',
               });
               if (r.status === 'ABANDONED')
-                setError('Lacagta lama bixin, dalabkana lama samayn. Isku day mar kale.');
+                setError(
+                  `Lacagta lama bixin, dalabkana lama samayn.${
+                    result?.message ? ` Sababta: ${result.message}` : ''
+                  } Isku day mar kale.`,
+                );
               else {
                 // It was paid in the meantime (webhook): the order exists.
                 toast(`Dalabka ${done.orderNumber} waa la sameeyey`);

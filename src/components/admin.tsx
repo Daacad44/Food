@@ -1434,9 +1434,9 @@ export function SettingsPage() {
           </p>
         ) : (
           <p>
-            <span className="user-status off">Lama xirin</span> · Mobile money gacanta ayaa lagu
-            diiwaangelinayaa. Geli WAAFI_MERCHANT_UID, WAAFI_API_USER_ID iyo WAAFI_API_KEY
-            server-ka.
+            <span className="user-status off">Lama xirin</span> · Server-ku ma arko:{' '}
+            <code>{(data.paymentModes?.waafi?.missing || []).join(', ')}</code>. Ku geli environment
+            variables-ka server-ka (Coolify), kadib Redeploy samee.
           </p>
         )}
       </div>
