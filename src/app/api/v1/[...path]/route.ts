@@ -25,6 +25,7 @@ import {
   quote,
   createOrder,
   transitionOrder,
+  abandonDraft,
   assignRider,
   orderInclude,
   transaction,
@@ -77,6 +78,7 @@ function orderFilters(url: URL, restaurantId: string): Prisma.OrderWhereInput {
   }
   return {
     restaurantId,
+    NOT: { status: 'AWAITING_PAYMENT' },
     ...(from || to ? { createdAt } : {}),
     ...(q
       ? {
@@ -298,12 +300,22 @@ async function handle(request: Request, context: Context) {
         .regex(/^\+?[\d\s-]{7,20}$/)
         .parse(url.searchParams.get('phone') || '');
       const last = await db.order.findFirst({
-        where: { restaurantId: u.restaurantId, guestPhone: phone },
+        where: {
+          restaurantId: u.restaurantId,
+          guestPhone: phone,
+          NOT: { status: 'AWAITING_PAYMENT' },
+        },
         orderBy: { createdAt: 'desc' },
         select: { guestName: true, deliveryAddress: true, zoneId: true, createdAt: true },
       });
       const count = last
-        ? await db.order.count({ where: { restaurantId: u.restaurantId, guestPhone: phone } })
+        ? await db.order.count({
+            where: {
+              restaurantId: u.restaurantId,
+              guestPhone: phone,
+              NOT: { status: 'AWAITING_PAYMENT' },
+            },
+          })
         : 0;
       return json(last ? { ...last, orderCount: count } : null);
     }
@@ -360,6 +372,11 @@ async function handle(request: Request, context: Context) {
         .strict()
         .parse(await body());
       return json(await transitionOrder(z.uuid().parse(p[2]), d.status, u));
+    }
+    // The payment window was closed without the customer paying: drop the WaafiPay draft.
+    if (p[0] === 'orders' && p[1] && p[2] === 'abandon' && method === 'POST') {
+      const u = await requireActor(request, ORDER_TAKERS);
+      return json(await abandonDraft(z.uuid().parse(p[1]), u));
     }
     if (
       ['admin', 'rider'].includes(p[0]) &&
@@ -422,7 +439,7 @@ async function handle(request: Request, context: Context) {
       const u = await requireActor(request, [...FINANCE, 'CASHIER']);
       return json(
         await db.payment.findMany({
-          where: { order: { restaurantId: u.restaurantId } },
+          where: { order: { restaurantId: u.restaurantId, NOT: { status: 'AWAITING_PAYMENT' } } },
           include: {
             order: { select: { orderNumber: true, guestName: true, status: true } },
             refunds: true,

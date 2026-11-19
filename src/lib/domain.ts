@@ -31,7 +31,8 @@ export function canTransition(from: string, to: string) {
 export const ORDER_VIEWS = ['pending', 'assigned', 'delivered', 'cancelled'] as const;
 export type OrderView = (typeof ORDER_VIEWS)[number];
 export const viewStatuses: Record<OrderView, string[]> = {
-  pending: ['CREATED', 'AWAITING_PAYMENT', 'PENDING_APPROVAL', 'CONFIRMED', 'PREPARING', 'READY'],
+  // AWAITING_PAYMENT is a WaafiPay draft: not an order yet, so it is in no list.
+  pending: ['CREATED', 'PENDING_APPROVAL', 'CONFIRMED', 'PREPARING', 'READY'],
   assigned: ['OUT_FOR_DELIVERY'],
   delivered: ['COMPLETED'],
   cancelled: ['CANCELLED', 'REJECTED'],

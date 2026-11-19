@@ -11,6 +11,7 @@ import {
   type StaffOrderInput,
 } from './domain';
 import { digest, trackingToken, MANAGERS, ORDER_TAKERS, type Actor } from './security';
+import { waafiConfig } from './waafi';
 type Tx = Prisma.TransactionClient;
 export async function transaction<T>(work: (tx: Tx) => Promise<T>): Promise<T> {
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -175,7 +176,13 @@ export async function createOrder(
         where: { orderId: old.id },
         orderBy: { createdAt: 'asc' },
       });
-      return { id: old.id, orderNumber: old.orderNumber, total: old.total, paymentId: payment?.id };
+      return {
+        id: old.id,
+        orderNumber: old.orderNumber,
+        total: old.total,
+        paymentId: payment?.id,
+        awaitingPayment: old.status === 'AWAITING_PAYMENT',
+      };
     }
     const q = await quote(tx, input, user.restaurantId);
     if (expectedTotal !== undefined)
@@ -185,6 +192,10 @@ export async function createOrder(
         409,
       );
     const paid = input.paid || q.total === 0;
+    // Pay first: with WaafiPay connected, a mobile-money order is only a draft (AWAITING_PAYMENT,
+    // hidden from every list) until the customer approves the payment on their phone. Then
+    // activateOrder() confirms it, takes the stock and assigns the rider.
+    const draft = !paid && input.paymentMethod === 'MOBILE' && waafiConfig().configured;
     const order = await tx.order.create({
       data: {
         restaurantId: q.restaurant.id,
@@ -195,8 +206,8 @@ export async function createOrder(
         guestName: input.customerName || 'Macmiil',
         guestPhone: input.customerPhone,
         type: 'DELIVERY',
-        status: 'CONFIRMED',
-        confirmedAt: new Date(),
+        status: draft ? 'AWAITING_PAYMENT' : 'CONFIRMED',
+        ...(draft ? {} : { confirmedAt: new Date() }),
         paymentStatus: paid ? 'PAID' : 'UNPAID',
         subtotal: decimal(q.subtotal),
         discountAmount: decimal(q.discount),
@@ -225,7 +236,9 @@ export async function createOrder(
             },
           })),
         },
-        statusEvents: { create: { toStatus: 'CONFIRMED', actorId: user.id } },
+        statusEvents: {
+          create: { toStatus: draft ? 'AWAITING_PAYMENT' : 'CONFIRMED', actorId: user.id },
+        },
         payments: {
           create: {
             method,
@@ -237,9 +250,31 @@ export async function createOrder(
             idempotencyKey: `order:${keyHash}`,
           },
         },
-        delivery: { create: { status: 'PENDING' } },
+        // A draft remembers the chosen rider; the assignment itself happens once it is paid.
+        delivery: {
+          create: {
+            status: 'PENDING',
+            ...(draft && input.riderId ? { riderId: input.riderId } : {}),
+          },
+        },
       },
     });
+    if (draft) {
+      await checkStock(tx, order.id);
+      await audit(tx, user, 'ORDER_DRAFT', 'Order', order.id, {
+        total: decimal(q.total),
+        paymentMethod: method,
+      });
+      const payment = await tx.payment.findFirstOrThrow({ where: { orderId: order.id } });
+      return {
+        id: order.id,
+        orderNumber: order.orderNumber,
+        total: order.total,
+        paymentId: payment.id,
+        paymentMethod: method,
+        awaitingPayment: true,
+      };
+    }
     await deductStock(tx, order.id, user);
     await tx.order.update({ where: { id: order.id }, data: { stockDeducted: true } });
     await audit(tx, user, 'ORDER_CREATE', 'Order', order.id, {
@@ -289,8 +324,103 @@ export async function audit(
     },
   });
 }
+/** Refuses an order the pantry can't cover, without taking anything out yet. */
+async function checkStock(tx: Tx, orderId: string) {
+  const items = await tx.orderItem.findMany({ where: { orderId } }),
+    need = new Map<string, { name: string; quantity: number; onHand: number }>();
+  for (const item of items) {
+    if (!item.menuItemId) continue;
+    const recipes = await tx.recipeIngredient.findMany({
+      where: { menuItemId: item.menuItemId },
+      include: { inventoryItem: true },
+    });
+    for (const r of recipes) {
+      const row = need.get(r.inventoryItemId) || {
+        name: r.inventoryItem.name,
+        quantity: 0,
+        onHand: r.inventoryItem.isActive ? Number(r.inventoryItem.quantityOnHand) : 0,
+      };
+      row.quantity += Number(r.quantity) * item.quantity;
+      need.set(r.inventoryItemId, row);
+    }
+  }
+  for (const row of need.values())
+    ensure(row.onHand >= row.quantity, `Stock kuma filna: ${row.name}`, 409);
+}
+
+/**
+ * Turns a paid draft into a real order: confirmed, stock taken, rider assigned if one was chosen.
+ * Called in the same transaction that records the WaafiPay approval; never throws for stock or a
+ * rider who has since been suspended, because the customer has already paid.
+ */
+export async function activateOrder(tx: Tx, orderId: string) {
+  const o = await tx.order.findUniqueOrThrow({
+    where: { id: orderId },
+    include: { delivery: true },
+  });
+  if (o.status !== 'AWAITING_PAYMENT') return;
+  const handler = o.handledById
+    ? await tx.staffUser.findUnique({ where: { id: o.handledById } })
+    : null;
+  const actor: Actor = {
+    id: handler?.id || '00000000-0000-0000-0000-000000000000',
+    role: handler?.role || 'OWNER',
+    name: handler?.fullName || 'WaafiPay',
+    kind: 'staff',
+    restaurantId: o.restaurantId,
+  };
+  await deductStock(tx, orderId, actor, true);
+  await tx.order.update({
+    where: { id: orderId },
+    data: {
+      status: 'CONFIRMED',
+      confirmedAt: new Date(),
+      stockDeducted: true,
+      statusEvents: {
+        create: { fromStatus: 'AWAITING_PAYMENT', toStatus: 'CONFIRMED', actorId: handler?.id },
+      },
+    },
+  });
+  await audit(tx, actor, 'ORDER_CREATE', 'Order', orderId, {
+    total: o.total.toString(),
+    paid: true,
+    via: 'waafi',
+  });
+  await event(tx, o.restaurantId, 'order.created', { orderId, orderNumber: o.orderNumber });
+  const riderId = o.delivery?.riderId;
+  if (riderId) {
+    const rider = await tx.staffUser.findFirst({
+      where: { id: riderId, restaurantId: o.restaurantId, role: 'RIDER', status: 'ACTIVE' },
+    });
+    if (rider && (ORDER_TAKERS as readonly string[]).includes(actor.role))
+      await assignRiderInTransaction(tx, orderId, riderId, actor);
+    else await tx.delivery.update({ where: { orderId }, data: { riderId: null } });
+  }
+}
+
+/** Staff closed the payment window without the customer paying: the draft is dropped. */
+export async function abandonDraft(orderId: string, user: Actor) {
+  ensure((ORDER_TAKERS as readonly string[]).includes(user.role), 'Permission denied', 403);
+  return transaction(async (tx) => {
+    const o = await tx.order.findFirst({
+      where: { id: orderId, restaurantId: user.restaurantId },
+      include: { payments: true },
+    });
+    ensure(o, 'Dalabka lama helin', 404);
+    if (o.status !== 'AWAITING_PAYMENT') return { status: o.status };
+    ensure(
+      o.payments.every((p) => !p.paidAt && !p.processingAt),
+      'Jawaabta WaafiPay weli lama helin. Haddii macmiilku bixiyo, dalabka si toos ah ayuu u samaysmayaa.',
+      409,
+    );
+    await tx.payment.updateMany({ where: { orderId }, data: { status: 'FAILED' } });
+    await audit(tx, user, 'ORDER_DRAFT_ABANDON', 'Order', orderId);
+    return { status: 'ABANDONED' };
+  });
+}
+
 /** Takes the recipe quantities of every item out of the pantry, once per order. */
-async function deductStock(tx: Tx, orderId: string, user: Actor) {
+async function deductStock(tx: Tx, orderId: string, user: Actor, lenient = false) {
   const items = await tx.orderItem.findMany({ where: { orderId } });
   for (const item of items) {
     if (!item.menuItemId) continue;
@@ -301,7 +431,10 @@ async function deductStock(tx: Tx, orderId: string, user: Actor) {
     for (const recipe of recipes) {
       const quantity = Number(recipe.quantity) * item.quantity;
       const updated = await tx.inventoryItem.updateMany({
-        where: { id: recipe.inventoryItemId, isActive: true, quantityOnHand: { gte: quantity } },
+        where: {
+          id: recipe.inventoryItemId,
+          ...(lenient ? {} : { isActive: true, quantityOnHand: { gte: quantity } }),
+        },
         data: { quantityOnHand: { decrement: quantity } },
       });
       ensure(updated.count === 1, `Stock kuma filna: ${recipe.inventoryItem.name}`, 409);
